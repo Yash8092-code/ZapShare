@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ZapShare | Ultra-Fast Direct P2P File Transfer</title>
+  <meta name="description" content="Ultra-fast, weightless peer-to-peer file transfer tool with zero sign-up, zero cloud storage, and zero limits. End-to-end encrypted WebRTC transfers paired instantly with a 6-digit PIN or QR code.">
+
+  <!-- Google Fonts: Space Grotesk & Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="zapshare-body">
+  <!-- Interactive Stardust Particle Background -->
+  <canvas id="bg-canvas"></canvas>
+
+  <!-- Atmospheric Glow Layers -->
+  <div class="ambient-glow glow-top-left"></div>
+  <div class="ambient-glow glow-bottom-right"></div>
+  <div class="ambient-glow glow-center"></div>
+
+  <!-- Main App Wrapper -->
+  <div class="app-layout">
+    
+    <!-- Top Navigation Header -->
+    <header class="app-header">
+      <div class="brand-group" id="btn-brand-home">
+        <div class="logo-mark">
+          <svg class="zap-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <span class="brand-name">ZapShare</span>
+        </div>
+      </div>
+
+      <!-- Segmented Mode Switcher -->
+      <nav class="mode-nav" aria-label="Mode Switcher">
+        <button class="mode-tab active" id="tab-send" data-target="send">
+          <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="22" y1="2" x2="11" y2="13"></line>
+            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+          </svg>
+          <span>Send</span>
+        </button>
+        <button class="mode-tab" id="tab-receive" data-target="receive">
+          <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="7 10 12 15 17 10"></polyline>
+            <line x1="12" y1="15" x2="12" y2="3"></line>
+          </svg>
+          <span>Receive</span>
+        </button>
+      </nav>
+
+      <!-- Utility Controls -->
+      <div class="header-actions">
+        <!-- Live Connection Status Pill -->
+        <div class="status-pill" id="network-pill" title="WebRTC Signaling State">
+          <span class="status-dot"></span>
+          <span class="status-label" id="network-status-text">P2P Ready</span>
+        </div>
+
+        <!-- Audio Toggle Button -->
+        <button class="action-btn icon-btn" id="btn-toggle-sound" title="Toggle audio feedback">
+          <svg id="sound-icon-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+            <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+          </svg>
+          <svg id="sound-icon-off" class="hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+            <line x1="23" y1="9" x2="17" y2="15"></line>
+            <line x1="17" y1="9" x2="23" y2="15"></line>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Content Area with Dynamic Views -->
+    <main class="main-stage">
+
+      <!-- ============================================== -->
+      <!-- SCREEN 1: INSTANT SEND                         -->
+      <!-- ============================================== -->
+      <section class="screen-view active" id="view-send">
+        
+        <!-- Dropzone Stage (Initial) -->
+        <div class="stage-container" id="send-drop-stage">
+          <div class="hero-block">
+            <h1 class="hero-title">Share files directly.<br><span class="gradient-text">No sign-up, no limits.</span></h1>
+            <p class="hero-subtitle">Weightless, browser-to-browser P2P transfers paired instantly via 6-digit PIN or QR code.</p>
+          </div>
+
+          <!-- Magnetic Drop Zone -->
+          <div class="drop-zone" id="drop-zone" tabindex="0">
+            <div class="drop-grid-glow"></div>
+            <div class="drop-content">
+              <div class="floating-icon-wrapper">
+                <div class="icon-halo"></div>
+                <svg class="drop-cloud-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                  <path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"></path>
+                  <path d="M12 12v9"></path>
+                  <path d="m16 16-4-4-4 4"></path>
+                </svg>
+              </div>
+
+              <div class="drop-cta-text">
+                <span class="primary-prompt">Drop it here</span>
+                <span class="secondary-prompt">or click to browse your files</span>
+              </div>
+
+              <div class="drop-btn-container">
+                <label for="file-input" class="btn btn-secondary select-files-btn">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="12" y1="5" x2="12" y2="19"></line>
+                    <line x1="5" y1="12" x2="19" y2="12"></line>
+                  </svg>
+                  Select Files
+                </label>
+                <input type="file" id="file-input" class="hidden-input" multiple>
+              </div>
+
+              <span class="drop-specs-note">Unlimited file size · Any format · Memory streamed</span>
+            </div>
+          </div>
+
+          <!-- Trust Strip -->
+          <div class="trust-strip">
+            <div class="trust-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+              </svg>
+              <span>End-to-End Encrypted</span>
+            </div>
+            <div class="trust-divider">·</div>
+            <div class="trust-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+              </svg>
+              <span>Direct Device-to-Device</span>
+            </div>
+            <div class="trust-divider">·</div>
+            <div class="trust-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+              </svg>
+              <span>Zero Cloud Retention</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Pairing Stage (After file selected) -->
+        <div class="stage-container hidden" id="send-pairing-stage">
+          <div class="card glass-card pairing-card">
+            
+            <!-- File Preview Chip -->
+            <div class="file-chip">
+              <div class="file-chip-icon" id="send-file-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                  <polyline points="14 2 14 8 20 8"></polyline>
+                </svg>
+              </div>
+              <div class="file-chip-info">
+                <span class="file-chip-name" id="send-file-name">filename.zip</span>
+                <span class="file-chip-size" id="send-file-size">0 MB</span>
+              </div>
+              <button class="chip-cancel-btn" id="btn-cancel-file" title="Change file">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="18" y1="6" x2="6" y2="18"></line>
+                  <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+              </button>
+            </div>
+
+            <!-- Pairing Mode Segmented Selector -->
+            <div class="pairing-toggle-bar">
+              <button class="pairing-tab active" id="btn-show-qr">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="3" y="3" width="7" height="7"></rect>
+                  <rect x="14" y="3" width="7" height="7"></rect>
+                  <rect x="14" y="14" width="7" height="7"></rect>
+                  <rect x="3" y="14" width="7" height="7"></rect>
+                </svg>
+                <span>QR Code</span>
+              </button>
+              <button class="pairing-tab" id="btn-show-pin">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="4" y1="9" x2="20" y2="9"></line>
+                  <line x1="4" y1="15" x2="20" y2="15"></line>
+                  <line x1="10" y1="3" x2="8" y2="21"></line>
+                  <line x1="16" y1="3" x2="14" y2="21"></line>
+                </svg>
+                <span>6-Digit PIN</span>
+              </button>
+            </div>
+
+            <!-- QR Code Presentation Block -->
+            <div class="pairing-pane" id="pane-send-qr">
+              <div class="qr-aura-frame">
+                <div class="qr-target-box" id="send-qr-box">
+                  <!-- Rendered dynamically via qrEngine -->
+                </div>
+              </div>
+              <p class="pairing-hint">Scan with any mobile camera or ZapShare scanner</p>
+              
+              <!-- Direct Link Copy Pill -->
+              <div class="share-link-group">
+                <input type="text" id="share-link-input" readonly value="https://zapshare.app/?pin=000000">
+                <button class="btn btn-secondary copy-link-btn" id="btn-copy-link">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                  </svg>
+                  <span id="copy-link-label">Copy Link</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- 6-Digit PIN Presentation Block -->
+            <div class="pairing-pane hidden" id="pane-send-pin">
+              <div class="pin-display-group">
+                <div class="pin-box" id="pin-digit-0">-</div>
+                <div class="pin-box" id="pin-digit-1">-</div>
+                <div class="pin-box" id="pin-digit-2">-</div>
+                <div class="pin-separator">·</div>
+                <div class="pin-box" id="pin-digit-3">-</div>
+                <div class="pin-box" id="pin-digit-4">-</div>
+                <div class="pin-box" id="pin-digit-5">-</div>
+              </div>
+
+              <button class="btn btn-secondary copy-pin-btn" id="btn-copy-pin">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                </svg>
+                <span id="copy-pin-label">Copy 6-Digit Code</span>
+              </button>
+              <p class="pairing-hint">Receiver enters this code in their "Receive" tab</p>
+            </div>
+
+            <!-- Live Breathing Pairing Beacon -->
+            <div class="pairing-beacon-strip">
+              <div class="beacon-pulse">
+                <div class="pulse-ring pulse-ring-1"></div>
+                <div class="pulse-ring pulse-ring-2"></div>
+                <div class="pulse-dot"></div>
+              </div>
+              <span class="beacon-text">Waiting for receiver to connect...</span>
+            </div>
+
+            <div class="card-footer-action">
+              <button class="btn-text-link" id="btn-cancel-send">Cancel transfer</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================== -->
+      <!-- SCREEN 2: INSTANT RECEIVE                      -->
+      <!-- ============================================== -->
+      <section class="screen-view hidden" id="view-receive">
+        
+        <!-- Receive Pairing Input Container -->
+        <div class="stage-container" id="receive-input-stage">
+          <div class="hero-block">
+            <h1 class="hero-title">Receive file.<br><span class="gradient-text">Instant device pairing.</span></h1>
+            <p class="hero-subtitle">Enter the 6-digit PIN displayed on the sender's screen or scan their QR code.</p>
+          </div>
+
+          <div class="card glass-card receive-card">
+            <!-- Dual-Toggle Tab: [6-Digit Code] | [Scan QR] -->
+            <div class="pairing-toggle-bar">
+              <button class="pairing-tab active" id="btn-recv-pin-mode">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="4" y1="9" x2="20" y2="9"></line>
+                  <line x1="4" y1="15" x2="20" y2="15"></line>
+                  <line x1="10" y1="3" x2="8" y2="21"></line>
+                  <line x1="16" y1="3" x2="14" y2="21"></line>
+                </svg>
+                <span>6-Digit Code</span>
+              </button>
+              <button class="pairing-tab" id="btn-recv-qr-mode">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+                  <circle cx="12" cy="13" r="4"></circle>
+                </svg>
+                <span>Scan QR</span>
+              </button>
+            </div>
+
+            <!-- PIN Input View -->
+            <div class="receive-pane" id="pane-recv-pin">
+              <div class="otp-input-row" id="otp-container">
+                <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" class="otp-digit" id="otp-0" autocomplete="off" autofocus>
+                <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" class="otp-digit" id="otp-1" autocomplete="off">
+                <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" class="otp-digit" id="otp-2" autocomplete="off">
+                <span class="pin-separator">·</span>
+                <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" class="otp-digit" id="otp-3" autocomplete="off">
+                <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" class="otp-digit" id="otp-4" autocomplete="off">
+                <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" class="otp-digit" id="otp-5" autocomplete="off">
+              </div>
+
+              <div class="receive-actions">
+                <button class="btn btn-secondary paste-pin-btn" id="btn-paste-pin">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path>
+                    <rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect>
+                  </svg>
+                  Paste from Clipboard
+                </button>
+                <button class="btn btn-primary" id="btn-submit-pin">
+                  Connect & Inspect
+                </button>
+              </div>
+
+              <div class="error-banner hidden" id="recv-error-banner">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <line x1="12" y1="8" x2="12" y2="12"></line>
+                  <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                </svg>
+                <span id="recv-error-text">Invalid PIN</span>
+              </div>
+            </div>
+
+            <!-- QR Scanner View -->
+            <div class="receive-pane hidden" id="pane-recv-qr">
+              <div class="scanner-viewport-box">
+                <video id="qr-video" playsinline></video>
+                <div class="scanner-overlay">
+                  <div class="viewfinder-corner top-left"></div>
+                  <div class="viewfinder-corner top-right"></div>
+                  <div class="viewfinder-corner bottom-left"></div>
+                  <div class="viewfinder-corner bottom-right"></div>
+                  <div class="scanner-laser"></div>
+                </div>
+              </div>
+              <p class="pairing-hint">Align the QR code within the target frame</p>
+              <div class="qr-camera-controls">
+                <button class="btn btn-secondary" id="btn-stop-camera">Cancel Camera</button>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- Incoming File Inspection Card (When paired) -->
+        <div class="stage-container hidden" id="receive-inspect-stage">
+          <div class="card glass-card inspect-card">
+            <div class="inspect-badge">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+              </svg>
+              <span>Incoming Direct P2P Stream</span>
+            </div>
+
+            <div class="inspect-header">
+              <div class="inspect-icon-wrap" id="inspect-file-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                  <polyline points="14 2 14 8 20 8"></polyline>
+                </svg>
+              </div>
+              <div class="inspect-details">
+                <h3 class="inspect-filename" id="inspect-file-name">Project_Assets.zip</h3>
+                <div class="inspect-meta-row">
+                  <span class="meta-pill" id="inspect-file-size">1.84 GB</span>
+                  <span class="meta-pill" id="inspect-sender-device">MacBook Pro (Chrome)</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="inspect-trust-callout">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#06B6D4" stroke-width="2">
+                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+              </svg>
+              <span>Encrypted memory stream via WebRTC SCTP. No files are saved to any cloud.</span>
+            </div>
+
+            <!-- Dual Actions: Accept & Download vs Decline -->
+            <div class="inspect-actions">
+              <button class="btn btn-primary btn-large accept-btn" id="btn-accept-download">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2">
+                  <polyline points="20 6 9 17 4 12"></polyline>
+                </svg>
+                Accept & Download
+              </button>
+              <button class="btn btn-ghost decline-btn" id="btn-decline-file">
+                Decline
+              </button>
+            </div>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- ============================================== -->
+      <!-- SCREEN 3: WEIGHTLESS TRANSFER IN PROGRESS      -->
+      <!-- ============================================== -->
+      <section class="screen-view hidden" id="view-transfer">
+        <div class="stage-container">
+          <div class="card glass-card transfer-card">
+            
+            <!-- Dual-Node Device Bridge -->
+            <div class="device-bridge">
+              <!-- Sender Node -->
+              <div class="bridge-node sender-node">
+                <div class="node-icon-ring">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+                    <line x1="8" y1="21" x2="16" y2="21"></line>
+                    <line x1="12" y1="17" x2="12" y2="21"></line>
+                  </svg>
+                </div>
+                <span class="node-title" id="bridge-sender-name">Sender Device</span>
+                <span class="node-status">Transmitting</span>
+              </div>
+
+              <!-- Real-time Photon Particle Stream Canvas -->
+              <div class="bridge-stream-area">
+                <canvas id="bridge-canvas"></canvas>
+              </div>
+
+              <!-- Receiver Node -->
+              <div class="bridge-node receiver-node">
+                <div class="node-icon-ring pulse-ring-glow">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect>
+                    <line x1="12" y1="18" x2="12.01" y2="18"></line>
+                  </svg>
+                </div>
+                <span class="node-title" id="bridge-receiver-name">Receiver Device</span>
+                <span class="node-status">Receiving</span>
+              </div>
+            </div>
+
+            <!-- Transfer Metric Readouts -->
+            <div class="progress-display">
+              <div class="percentage-wrap">
+                <span class="percentage-num" id="transfer-percent">0</span>
+                <span class="percentage-sign">%</span>
+              </div>
+
+              <!-- Sleek Gradient Progress Beam -->
+              <div class="progress-track">
+                <div class="progress-bar-fill" id="transfer-progress-bar" style="width: 0%;">
+                  <div class="progress-glow-head"></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- The Three Key Metrics -->
+            <div class="metrics-grid">
+              <div class="metric-card">
+                <span class="metric-label">SPEED</span>
+                <div class="metric-value">
+                  <span id="metric-speed">0.0</span>
+                  <span class="metric-unit">MB/s</span>
+                </div>
+              </div>
+
+              <div class="metric-card">
+                <span class="metric-label">TIME REMAINING</span>
+                <div class="metric-value">
+                  <span id="metric-eta">--</span>
+                </div>
+              </div>
+
+              <div class="metric-card">
+                <span class="metric-label">TRANSFERRED</span>
+                <div class="metric-value">
+                  <span id="metric-transferred">0 MB</span>
+                  <span class="metric-unit">/ <span id="metric-total">0 MB</span></span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Connection Quality Badge -->
+            <div class="connection-quality-badge" id="conn-quality-badge">
+              <span class="quality-dot direct"></span>
+              <span id="conn-quality-text">Direct connection (LAN / P2P SCTP)</span>
+            </div>
+
+            <!-- Stall Diagnostic Warning Banner -->
+            <div class="stall-banner hidden" id="stall-warning-banner">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#EF4444" stroke-width="2">
+                <circle cx="12" cy="12" r="10"></circle>
+                <line x1="12" y1="8" x2="12" y2="12"></line>
+                <line x1="12" y1="16" x2="12.01" y2="16"></line>
+              </svg>
+              <span id="stall-warning-text">Transfer stalled (0.0 MB/s). Waiting for network packets...</span>
+            </div>
+
+            <!-- UX Safeguard Notice -->
+            <div class="safeguard-banner">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#F59E0B" stroke-width="2">
+                <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"></path>
+                <line x1="12" y1="9" x2="12" y2="13"></line>
+                <line x1="12" y1="17" x2="12.01" y2="17"></line>
+              </svg>
+              <span>Keep this tab active. Backgrounding your browser (especially iOS Safari) can pause or interrupt the transfer.</span>
+            </div>
+
+            <!-- Minimal Cancel Action -->
+            <div class="transfer-cancel-wrap">
+              <button class="btn-text-link danger" id="btn-abort-transfer">Cancel transfer</button>
+            </div>
+
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================== -->
+      <!-- SCREEN 4: TRANSFER COMPLETE (EUPHORIC SUCCESS) -->
+      <!-- ============================================== -->
+      <section class="screen-view hidden" id="view-complete">
+        <div class="stage-container">
+          <div class="card glass-card complete-card">
+            
+            <div class="success-icon-wrapper">
+              <div class="success-halo"></div>
+              <svg class="success-check-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <polyline points="20 6 9 17 4 12"></polyline>
+              </svg>
+            </div>
+
+            <div class="complete-headline-block">
+              <h2 class="complete-title" id="complete-headline">Boom. File Delivered! ⚡</h2>
+              <p class="complete-subtitle">Direct peer-to-peer transfer completed at full hardware line speed.</p>
+            </div>
+
+            <!-- File Summary Card -->
+            <div class="complete-file-card">
+              <div class="complete-file-info">
+                <span class="summary-name" id="complete-file-name">Project_Assets.zip</span>
+                <span class="summary-size" id="complete-file-size">1.84 GB</span>
+              </div>
+            </div>
+
+            <!-- Action CTAs -->
+            <div class="complete-actions">
+              <a class="btn btn-primary btn-large download-ready-btn hidden" id="btn-save-download" download>
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="7 10 12 15 17 10"></polyline>
+                  <line x1="12" y1="15" x2="12" y2="3"></line>
+                </svg>
+                Save to Downloads
+              </a>
+
+              <button class="btn btn-secondary send-another-btn" id="btn-reset-flow">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="23 4 23 10 17 10"></polyline>
+                  <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+                </svg>
+                <span>Transfer Another File</span>
+              </button>
+            </div>
+
+            <!-- Ephemeral Session Notice -->
+            <div class="ephemeral-notice">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#8B5CF6" stroke-width="2">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+              </svg>
+              <span>Ephemeral session purged. Peer keys, signaling memory, and data channels wiped. Zero traces left.</span>
+            </div>
+
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- Footer Trust Strip -->
+    <footer class="app-footer">
+      <span>ZapShare · Zero Logins · Zero Cloud Storage · Direct Peer-to-Peer WebRTC</span>
+    </footer>
+
+  </div>
+
+  <!-- Client Application Module -->
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
