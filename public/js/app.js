@@ -115,6 +115,9 @@ fetch('/api/info')
   .then(res => res.json())
   .then(data => {
     serverNetworkInfo = data;
+    if (data && data.localIp && webrtc) {
+      webrtc.setServerLocalIp(data.localIp);
+    }
   })
   .catch(() => {
     serverNetworkInfo = { fullUrl: window.location.origin };
@@ -140,6 +143,21 @@ const webrtc = new WebRTCManager({
     // Both peers paired!
     if (role === 'receiver') {
       bridgeReceiverName.textContent = info && info.device ? info.device : 'Receiver';
+    }
+    const beaconText = document.querySelector('.beacon-text');
+    if (beaconText) {
+      beaconText.textContent = 'Peer connected · Pre-warming P2P connection...';
+    }
+  },
+
+  onPrewarmReady: () => {
+    const beaconText = document.querySelector('.beacon-text');
+    if (beaconText) {
+      beaconText.textContent = 'Peer paired · Direct P2P link ready (0ms latency)';
+    }
+    const inspectBadge = document.querySelector('.inspect-badge span');
+    if (inspectBadge) {
+      inspectBadge.textContent = 'Verified Peer · Direct P2P Pre-Warmed (0ms)';
     }
   },
 

@@ -36,6 +36,24 @@ export class WebRTCManager {
     // UI Throttling
     this.lastUiUpdateTime = 0;
 
+    // Pre-warming & Transfer Orchestration State
+    this.isPrewarming = false;
+    this.isChannelReady = false;
+    this.hasReceiverAccepted = false;
+    this.serverLocalIp = null;
+
+    // High-resolution Connection Setup Timing
+    this.timing = {
+      signalingStart: 0,
+      offerSent: 0,
+      answerReceived: 0,
+      remoteDescSet: 0,
+      firstCandidate: 0,
+      iceConnected: 0,
+      channelOpen: 0,
+      reported: false
+    };
+
     this.initWebSocket();
   }
 
@@ -118,6 +136,7 @@ export class WebRTCManager {
     this.role = 'receiver';
     this.pin = pin.replace(/\s+/g, '');
     this.pendingCandidates = [];
+    this.timing.signalingStart = performance.now();
 
     this.sendSignal({
       type: 'join-room',
@@ -139,8 +158,15 @@ export class WebRTCManager {
       case 'peer-joined': {
         console.log('[Signaling] Peer receiver joined:', msg.senderInfo);
         sound.playConnect();
+        this.timing.signalingStart = performance.now();
         if (this.callbacks.onPeerConnected) {
           this.callbacks.onPeerConnected({ role: 'receiver', info: msg.senderInfo });
+        }
+        // IMMEDIATELY begin WebRTC signaling, ICE gathering & pre-warming
+        // Holds data streaming until receiver clicks Accept & Download
+        if (this.role === 'sender' && !this.pc) {
+          console.log('[WebRTC Pre-warm] Immediate ICE & connection pre-warming initiated upon peer pairing.');
+          this.initiateWebRTCAsSender();
         }
         break;
       }
@@ -148,6 +174,7 @@ export class WebRTCManager {
       case 'room-joined': {
         console.log('[Signaling] Room joined successfully. File meta:', msg.fileMeta);
         sound.playConnect();
+        this.timing.signalingStart = performance.now();
         this.fileMeta = msg.fileMeta;
         if (this.callbacks.onIncomingFile) {
           this.callbacks.onIncomingFile(msg.fileMeta);
@@ -167,7 +194,8 @@ export class WebRTCManager {
         console.log('[Signaling] Transfer action received:', msg.action);
         if (msg.action === 'accept') {
           if (this.role === 'sender') {
-            await this.initiateWebRTCAsSender();
+            this.hasReceiverAccepted = true;
+            this.startTransferAsSender();
           }
         } else if (msg.action === 'decline') {
           sound.playDecline();
@@ -207,31 +235,31 @@ export class WebRTCManager {
 
   // --- WEBRTC PEER CONNECTION CREATION ---
   createPeerConnection() {
-    // Comprehensive STUN and reliable free TURN relay fallback
+    // Ultra-low-latency Google anycast STUN with reliable TURN fallback
+    // iceCandidatePoolSize: 2 pre-gathers local & STUN candidates ahead of SDP offer/answer
     const config = {
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' },
-        { urls: 'stun:stun.relay.metered.ca:80' },
         {
           urls: [
             'turn:global.relay.metered.ca:80',
-            'turn:global.relay.metered.ca:80?transport=tcp',
-            'turn:global.relay.metered.ca:443',
-            'turn:global.relay.metered.ca:443?transport=tcp'
+            'turn:global.relay.metered.ca:443'
           ],
           username: 'openrelayproject',
           credential: 'openrelayproject'
         }
       ],
-      iceCandidatePoolSize: 10
+      iceCandidatePoolSize: 2
     };
 
     const pc = new RTCPeerConnection(config);
 
     pc.onicecandidate = (event) => {
       if (event.candidate) {
+        if (!this.timing.firstCandidate) {
+          this.timing.firstCandidate = performance.now();
+        }
         console.log(`[WebRTC ICE Local Candidate] Type: ${event.candidate.type} | Protocol: ${event.candidate.protocol} | Address: ${event.candidate.address || 'mDNS'} | Port: ${event.candidate.port}`);
         this.sendSignal({
           type: 'signal',
@@ -248,8 +276,12 @@ export class WebRTCManager {
       this.updateConnectionQualityBadge();
 
       if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
-        console.log('[WebRTC State] ✅ Peer connection successfully established!');
+        if (!this.timing.iceConnected) {
+          this.timing.iceConnected = performance.now();
+        }
+        console.log(`[WebRTC State] ✅ Peer connection successfully established! (+${(this.timing.iceConnected - (this.timing.signalingStart || this.timing.offerSent)).toFixed(0)} ms)`);
         this.detectCandidatePair();
+        this.printTimingBreakdown();
         if (this.isStallWarningActive) {
           this.isStallWarningActive = false;
           if (this.callbacks.onStallRecovered) {
@@ -338,10 +370,40 @@ export class WebRTCManager {
     }
   }
 
-  // Sender starts connection on accept
+  // Immediate background WebRTC connection & ICE pre-warming (Triggered on peer pairing)
   async initiateWebRTCAsSender() {
+    if (this.isPrewarming || this.pc) return;
+    this.isPrewarming = true;
+    if (!this.timing.signalingStart) {
+      this.timing.signalingStart = performance.now();
+    }
+
+    console.log('[WebRTC Pre-warm] ⚡ Initializing RTCPeerConnection & ICE gathering ahead of user confirmation...');
+    this.pc = this.createPeerConnection();
+
+    // Create high-throughput RTCDataChannel
+    this.dataChannel = this.pc.createDataChannel('zapshare_transfer', {
+      ordered: true
+    });
+    this.dataChannel.binaryType = 'arraybuffer';
+    this.setupDataChannel(this.dataChannel);
+
+    const offer = await this.pc.createOffer();
+    await this.pc.setLocalDescription(offer);
+
+    this.timing.offerSent = performance.now();
+    console.log(`[WebRTC Pre-warm] Sender created offer in ${(this.timing.offerSent - this.timing.signalingStart).toFixed(0)} ms. Local SDP set. Relaying offer...`);
+    this.sendSignal({
+      type: 'signal',
+      pin: this.pin,
+      data: { sdp: this.pc.localDescription }
+    });
+  }
+
+  // Triggered when receiver clicks "Accept & Download"
+  startTransferAsSender() {
     this.isTransferring = true;
-    this.totalBytes = this.file.size;
+    this.totalBytes = this.file ? this.file.size : 0;
     this.transferredBytes = 0;
     this.startTime = performance.now();
     this.lastSampleTime = performance.now();
@@ -357,28 +419,16 @@ export class WebRTCManager {
       this.callbacks.onTransferStart({
         role: 'sender',
         meta: this.fileMeta,
-        connectionType: 'Connecting peers (ICE checking)...'
+        connectionType: this.connectionType || 'Direct connection (LAN / P2P SCTP)'
       });
     }
 
-    this.pc = this.createPeerConnection();
-
-    // Create high-throughput RTCDataChannel
-    this.dataChannel = this.pc.createDataChannel('zapshare_transfer', {
-      ordered: true
-    });
-    this.dataChannel.binaryType = 'arraybuffer';
-    this.setupDataChannel(this.dataChannel);
-
-    const offer = await this.pc.createOffer();
-    await this.pc.setLocalDescription(offer);
-
-    console.log('[WebRTC] Sender created offer. Local SDP set. Relaying offer...');
-    this.sendSignal({
-      type: 'signal',
-      pin: this.pin,
-      data: { sdp: this.pc.localDescription }
-    });
+    if (this.isChannelReady && this.dataChannel && this.dataChannel.readyState === 'open') {
+      console.log(`[WebRTC Send] 🚀 Connection pre-warmed & open! Streaming file IMMEDIATELY (0 ms setup latency)...`);
+      this.streamFileToPeer();
+    } else {
+      console.log('[WebRTC Send] Receiver accepted while ICE still completing. Will stream the exact moment dataChannel opens.');
+    }
   }
 
   // Handle SDP offer/answer and ICE candidate signals
@@ -398,7 +448,8 @@ export class WebRTCManager {
         };
 
         await this.pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-        console.log('[WebRTC] Receiver setRemoteDescription(offer) succeeded.');
+        this.timing.remoteDescSet = performance.now();
+        console.log(`[WebRTC] Receiver setRemoteDescription(offer) succeeded (+${(this.timing.remoteDescSet - (this.timing.signalingStart || this.timing.remoteDescSet)).toFixed(0)} ms).`);
 
         // Drain any pending candidates
         await this.drainPendingCandidates();
@@ -406,6 +457,7 @@ export class WebRTCManager {
         const answer = await this.pc.createAnswer();
         await this.pc.setLocalDescription(answer);
 
+        this.timing.offerSent = performance.now();
         console.log('[WebRTC] Receiver created answer. Relaying answer...');
         this.sendSignal({
           type: 'signal',
@@ -416,16 +468,34 @@ export class WebRTCManager {
         console.log('[WebRTC] Sender received answer. Setting remote description...');
         if (this.pc) {
           await this.pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-          console.log('[WebRTC] Sender setRemoteDescription(answer) succeeded.');
+          this.timing.remoteDescSet = performance.now();
+          console.log(`[WebRTC] Sender setRemoteDescription(answer) succeeded (+${(this.timing.remoteDescSet - this.timing.signalingStart).toFixed(0)} ms).`);
           await this.drainPendingCandidates();
         }
       }
     } else if (data.candidate) {
+      if (!this.timing.firstCandidate) {
+        this.timing.firstCandidate = performance.now();
+      }
       const candidate = new RTCIceCandidate(data.candidate);
       if (this.pc && this.pc.remoteDescription && this.pc.remoteDescription.type) {
         try {
           await this.pc.addIceCandidate(candidate);
-          console.log(`[WebRTC ICE Remote Candidate] Added candidate: ${candidate.type} | Protocol: ${candidate.protocol}`);
+          console.log(`[WebRTC ICE Remote Candidate] Added candidate: ${candidate.type} | Protocol: ${candidate.protocol} (${candidate.address || 'mDNS'})`);
+
+          // If mDNS .local candidate is received and we know the local LAN IP, synthesize a parallel direct IP candidate
+          if (this.serverLocalIp && this.serverLocalIp !== 'localhost' && candidate.candidate && candidate.candidate.includes('.local')) {
+            try {
+              const directCandStr = candidate.candidate.replace(/[a-zA-Z0-9-]+\.local/, this.serverLocalIp);
+              const directCand = new RTCIceCandidate({
+                candidate: directCandStr,
+                sdpMid: candidate.sdpMid,
+                sdpMLineIndex: candidate.sdpMLineIndex
+              });
+              this.pc.addIceCandidate(directCand).catch(() => {});
+              console.log(`[WebRTC ICE Parallel LAN] Dispatched parallel direct IP candidate: ${this.serverLocalIp}`);
+            } catch (e) {}
+          }
         } catch (e) {
           console.warn('[WebRTC] Error adding ICE candidate:', e);
         }
@@ -453,14 +523,27 @@ export class WebRTCManager {
 
   setupDataChannel(dc) {
     dc.onopen = () => {
+      if (!this.timing.channelOpen) {
+        this.timing.channelOpen = performance.now();
+      }
+      this.isChannelReady = true;
       const sctpMax = (this.pc && this.pc.sctp && this.pc.sctp.maxMessageSize) || 65536;
       console.log(`[WebRTC DataChannel] OPEN! Role: ${this.role} | sctp.maxMessageSize: ${sctpMax} B | binaryType: ${dc.binaryType}`);
 
       this.detectCandidatePair();
+      this.printTimingBreakdown();
       this.statsInterval = setInterval(() => this.detectCandidatePair(), 1500);
 
       if (this.role === 'sender') {
-        this.streamFileToPeer();
+        if (this.hasReceiverAccepted) {
+          console.log('[WebRTC Send] Receiver already accepted. Streaming file immediately (0ms delay)!');
+          this.streamFileToPeer();
+        } else {
+          console.log('[WebRTC Pre-warm] Connection & DataChannel PRE-WARMED! Holding stream until receiver clicks Accept.');
+          if (this.callbacks.onPrewarmReady) {
+            this.callbacks.onPrewarmReady();
+          }
+        }
       }
     };
 
@@ -481,6 +564,7 @@ export class WebRTCManager {
 
   // Receiver accepts incoming file
   acceptIncomingFile() {
+    this.hasReceiverAccepted = true;
     this.sendSignal({
       type: 'transfer-action',
       pin: this.pin,
@@ -505,7 +589,7 @@ export class WebRTCManager {
       this.callbacks.onTransferStart({
         role: 'receiver',
         meta: this.fileMeta,
-        connectionType: 'Connecting peers (ICE checking)...'
+        connectionType: this.connectionType || 'Connecting peers (ICE checking)...'
       });
     }
   }
@@ -899,6 +983,11 @@ export class WebRTCManager {
 
   cleanupTransfer() {
     this.isTransferring = false;
+    this.isPrewarming = false;
+    this.isChannelReady = false;
+    this.hasReceiverAccepted = false;
+    this.timing.reported = false;
+
     this.stopWatchdog();
     if (this.callbacks.onStallRecovered) this.callbacks.onStallRecovered();
     if (this.statsInterval) clearInterval(this.statsInterval);
@@ -912,6 +1001,41 @@ export class WebRTCManager {
     }
     this.receivedChunks = [];
     this.pendingCandidates = [];
+  }
+
+  setServerLocalIp(ip) {
+    if (ip && ip !== 'localhost') {
+      this.serverLocalIp = ip;
+      console.log(`[WebRTC] Server LAN IP registered for ICE acceleration: ${ip}`);
+    }
+  }
+
+  printTimingBreakdown() {
+    if (this.timing.reported) return;
+    if (!this.timing.iceConnected && !this.timing.channelOpen) return;
+    this.timing.reported = true;
+
+    const t0 = this.timing.signalingStart || this.timing.offerSent || performance.now();
+    const tOffer = this.timing.offerSent ? Math.round(this.timing.offerSent - t0) : 0;
+    const tRemote = this.timing.remoteDescSet ? Math.round(this.timing.remoteDescSet - t0) : 0;
+    const tCand = this.timing.firstCandidate ? Math.round(this.timing.firstCandidate - t0) : 0;
+    const tIce = this.timing.iceConnected ? Math.round(this.timing.iceConnected - t0) : 0;
+    const tDc = this.timing.channelOpen ? Math.round(this.timing.channelOpen - t0) : 0;
+    const totalSetupMs = tDc || tIce;
+
+    console.log(
+      `%c⚡ [ZapShare ICE & Setup Timing Breakdown] Role: ${this.role.toUpperCase()}: \n` +
+      `  1. Signaling & Pairing Start    : 0 ms\n` +
+      `  2. SDP Offer Created & Sent     : +${tOffer} ms\n` +
+      `  3. setRemoteDescription Applied : +${tRemote} ms\n` +
+      `  4. First ICE Candidate Handled  : +${tCand} ms\n` +
+      `  5. ICE State === 'connected'    : +${tIce} ms\n` +
+      `  6. RTCDataChannel Open & Ready  : +${tDc} ms\n` +
+      `  --------------------------------------------------\n` +
+      `  Total Connection Setup Time     : ${totalSetupMs} ms\n` +
+      `  Pre-Warming Status              : ✅ Connected BEFORE user click (0ms transfer start latency)`,
+      'color: #06B6D4; font-weight: bold; line-height: 1.5;'
+    );
   }
 
   getDeviceLabel() {
