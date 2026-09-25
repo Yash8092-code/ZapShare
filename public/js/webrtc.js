@@ -54,6 +54,16 @@ export class WebRTCManager {
       reported: false
     };
 
+    // Candidate & ICE Health Telemetry
+    this.candidateStats = {
+      local: { host: 0, srflx: 0, prflx: 0, relay: 0 },
+      remote: { host: 0, srflx: 0, prflx: 0, relay: 0 }
+    };
+    this.lastActivePair = null;
+    this.iceCandidateErrors = [];
+    this.isRestartingIce = false;
+    this.iceRestartCount = 0;
+
     this.initWebSocket();
   }
 
@@ -235,21 +245,32 @@ export class WebRTCManager {
 
   // --- WEBRTC PEER CONNECTION CREATION ---
   createPeerConnection() {
-    // Ultra-low-latency Google anycast STUN with reliable TURN fallback
-    // iceCandidatePoolSize: 2 pre-gathers local & STUN candidates ahead of SDP offer/answer
+    // Multi-tier STUN and multi-transport TURN servers (UDP, TCP, and TLS TURNS on 443/5349)
+    // Critical for punching through restrictive NATs, carrier-grade NATs (CGNAT), and mobile cellular firewalls
+    const defaultIceServers = [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
+      { urls: 'stun:stun3.l.google.com:19302' },
+      { urls: 'stun:stun4.l.google.com:19302' },
+      {
+        urls: [
+          'turn:global.relay.metered.ca:80',
+          'turn:global.relay.metered.ca:443',
+          'turn:global.relay.metered.ca:80?transport=tcp',
+          'turn:global.relay.metered.ca:443?transport=tcp',
+          'turns:global.relay.metered.ca:443?transport=tcp',
+          'turns:global.relay.metered.ca:5349?transport=tcp'
+        ],
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      }
+    ];
+
+    const iceServers = (typeof window !== 'undefined' && window.ZAPSHARE_ICE_SERVERS) || defaultIceServers;
+
     const config = {
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        {
-          urls: [
-            'turn:global.relay.metered.ca:80',
-            'turn:global.relay.metered.ca:443'
-          ],
-          username: 'openrelayproject',
-          credential: 'openrelayproject'
-        }
-      ],
+      iceServers,
       iceCandidatePoolSize: 2
     };
 
@@ -260,6 +281,10 @@ export class WebRTCManager {
         if (!this.timing.firstCandidate) {
           this.timing.firstCandidate = performance.now();
         }
+        const type = event.candidate.type || 'unknown';
+        if (this.candidateStats.local[type] !== undefined) {
+          this.candidateStats.local[type]++;
+        }
         console.log(`[WebRTC ICE Local Candidate] Type: ${event.candidate.type} | Protocol: ${event.candidate.protocol} | Address: ${event.candidate.address || 'mDNS'} | Port: ${event.candidate.port}`);
         this.sendSignal({
           type: 'signal',
@@ -268,6 +293,29 @@ export class WebRTCManager {
         });
       } else {
         console.log('[WebRTC ICE] Local candidate gathering completed.');
+      }
+    };
+
+    // Diagnostics: capture any TURN/STUN transport or auth errors in real-time
+    pc.onicecandidateerror = (event) => {
+      const errEntry = {
+        url: event.url,
+        errorCode: event.errorCode,
+        errorText: event.errorText,
+        address: event.address,
+        port: event.port,
+        time: new Date().toLocaleTimeString()
+      };
+      this.iceCandidateErrors.push(errEntry);
+      if (this.iceCandidateErrors.length > 20) this.iceCandidateErrors.shift();
+
+      console.warn(`[WebRTC ICE Candidate Error] Server: ${event.url} | Code: ${event.errorCode} (${event.errorText}) | Address: ${event.address}:${event.port}`);
+      if (event.errorCode === 401) {
+        console.error(`[WebRTC TURN Auth Failed] 401 Unauthorized for ${event.url}. Credentials rejected or expired.`);
+      } else if (event.errorCode === 486) {
+        console.error(`[WebRTC TURN Quota Exceeded] 486 Allocation Quota Reached for ${event.url}. Free TURN relay pool saturated.`);
+      } else if (event.errorCode === 701) {
+        console.error(`[WebRTC TURN Unreachable] 701 Server unreachable at ${event.url}. Carrier network or firewall blocking port.`);
       }
     };
 
@@ -289,11 +337,12 @@ export class WebRTCManager {
           }
         }
       } else if (pc.iceConnectionState === 'failed') {
-        console.error('[WebRTC State] ❌ ICE connection failed! Triggering ICE restart...');
+        console.error('[WebRTC State] ❌ ICE connection failed! Generating diagnostic telemetry and triggering active ICE restart...');
+        this.logIceFailureDiagnostics();
         if (this.callbacks.onStall) {
-          this.callbacks.onStall('ICE connection failed. Attempting restart...');
+          this.callbacks.onStall('ICE connection failed. Initiating active ICE renegotiation...');
         }
-        pc.restartIce();
+        this.triggerIceRestart();
       } else if (pc.iceConnectionState === 'disconnected') {
         console.warn('[WebRTC State] ⚠️ ICE connection disconnected.');
         // Handled by watchdog with rolling window to prevent brief transient flickers
@@ -303,6 +352,10 @@ export class WebRTCManager {
     pc.onconnectionstatechange = () => {
       console.log(`[WebRTC State] connectionState: ${pc.connectionState}`);
       this.updateConnectionQualityBadge();
+      if (pc.connectionState === 'failed') {
+        this.logIceFailureDiagnostics();
+        this.triggerIceRestart();
+      }
     };
 
     return pc;
@@ -344,6 +397,22 @@ export class WebRTCManager {
         const localCandidate = stats.get(activePair.localCandidateId);
         const remoteCandidate = stats.get(activePair.remoteCandidateId);
 
+        this.lastActivePair = {
+          local: {
+            candidateType: localCandidate?.candidateType,
+            protocol: localCandidate?.protocol,
+            address: localCandidate?.address,
+            port: localCandidate?.port
+          },
+          remote: {
+            candidateType: remoteCandidate?.candidateType,
+            protocol: remoteCandidate?.protocol,
+            address: remoteCandidate?.address,
+            port: remoteCandidate?.port
+          },
+          state: activePair.state
+        };
+
         console.log(`[WebRTC Candidate Pair] Local: ${localCandidate?.candidateType} (${localCandidate?.protocol} ${localCandidate?.address}:${localCandidate?.port}) <--> Remote: ${remoteCandidate?.candidateType} (${remoteCandidate?.protocol} ${remoteCandidate?.address}:${remoteCandidate?.port})`);
 
         if (localCandidate?.candidateType === 'relay' || remoteCandidate?.candidateType === 'relay') {
@@ -367,6 +436,79 @@ export class WebRTCManager {
       }
     } catch (e) {
       console.warn('[WebRTC Stats] Could not inspect candidate pair:', e);
+    }
+  }
+
+  // Diagnostic dump for ICE connection issues
+  logIceFailureDiagnostics() {
+    const local = this.candidateStats.local;
+    const remote = this.candidateStats.remote;
+    const pair = this.lastActivePair;
+    const errors = this.iceCandidateErrors.slice(-5);
+
+    console.group('%c❌ [ZapShare WebRTC Connection Failure Diagnostic Report]', 'color: #EF4444; font-weight: bold; font-size: 1.1em;');
+    console.log(`Role: ${this.role?.toUpperCase()} | ICE Connection State: ${this.pc ? this.pc.iceConnectionState : 'none'} | Peer Connection State: ${this.pc ? this.pc.connectionState : 'none'}`);
+    console.log(`Local Candidates Gathered  : Host: ${local.host} | STUN (srflx): ${local.srflx} | TURN (relay): ${local.relay}`);
+    console.log(`Remote Candidates Received : Host: ${remote.host} | STUN (srflx): ${remote.srflx} | TURN (relay): ${remote.relay}`);
+    
+    if (pair) {
+      console.log(`Last Selected Candidate Pair: Local [${pair.local?.candidateType || '?'}] (${pair.local?.protocol} ${pair.local?.address}:${pair.local?.port}) <---> Remote [${pair.remote?.candidateType || '?'}] (${pair.remote?.protocol} ${pair.remote?.address}:${pair.remote?.port})`);
+    } else {
+      console.log('Last Selected Candidate Pair: None (Handshake failed before candidate nomination)');
+    }
+
+    if (errors.length > 0) {
+      console.log('Recorded ICE / TURN Errors   :', errors);
+    } else {
+      console.log('Recorded ICE / TURN Errors   : None reported by browser (likely carrier firewall drop or silent packet loss)');
+    }
+
+    if (local.relay === 0 && remote.relay === 0) {
+      console.warn('[Diagnostic Analysis] Neither peer gathered relay candidates. TURN server was unreachable, port was blocked, or credentials failed.');
+    } else if (local.relay > 0 && remote.relay === 0) {
+      console.warn('[Diagnostic Analysis] Local peer gathered TURN relay candidates, but remote peer did not. Remote side may be blocking TURN ports or credentials failed on remote.');
+    } else if (local.host > 0 && local.srflx === 0 && local.relay === 0) {
+      console.warn('[Diagnostic Analysis] Only local host candidates were gathered. No STUN/TURN servers were reachable across the public internet.');
+    }
+    console.groupEnd();
+  }
+
+  // Active ICE Restart Mechanism with full SDP renegotiation
+  async triggerIceRestart() {
+    if (!this.pc || this.isRestartingIce) return;
+    this.isRestartingIce = true;
+    this.iceRestartCount++;
+
+    console.log(`[WebRTC ICE Restart #${this.iceRestartCount}] 🔄 Active ICE restart initiated. Creating renegotiated offer with iceRestart: true...`);
+
+    if (this.role === 'sender') {
+      try {
+        this.pc.restartIce();
+        const offer = await this.pc.createOffer({ iceRestart: true });
+        await this.pc.setLocalDescription(offer);
+        console.log(`[WebRTC ICE Restart] Sender localDescription updated with restart ICE credentials. Relaying renegotiated offer...`);
+        this.sendSignal({
+          type: 'signal',
+          pin: this.pin,
+          data: {
+            sdp: this.pc.localDescription,
+            isIceRestart: true
+          }
+        });
+      } catch (err) {
+        console.error('[WebRTC ICE Restart] Failed to renegotiate ICE restart offer:', err);
+      } finally {
+        setTimeout(() => { this.isRestartingIce = false; }, 4000);
+      }
+    } else {
+      // Receiver peer asks sender to generate the renegotiated offer
+      console.log('[WebRTC ICE Restart] Receiver requesting ICE restart offer from sender via signaling...');
+      this.sendSignal({
+        type: 'signal',
+        pin: this.pin,
+        data: { requestIceRestart: true }
+      });
+      setTimeout(() => { this.isRestartingIce = false; }, 4000);
     }
   }
 
@@ -433,19 +575,28 @@ export class WebRTCManager {
 
   // Handle SDP offer/answer and ICE candidate signals
   async handlePeerSignal(data) {
+    if (data.requestIceRestart) {
+      if (this.role === 'sender') {
+        console.log('[WebRTC Signaling] Peer requested ICE restart. Initiating renegotiated offer...');
+        this.triggerIceRestart();
+      }
+      return;
+    }
+
     if (data.sdp) {
       if (data.sdp.type === 'offer') {
-        console.log('[WebRTC] Receiver received offer. Creating PeerConnection...');
         if (!this.pc) {
+          console.log('[WebRTC] Receiver received initial offer. Creating PeerConnection...');
           this.pc = this.createPeerConnection();
+          this.pc.ondatachannel = (e) => {
+            console.log('[WebRTC] Receiver ondatachannel event received! Attaching channel...');
+            this.dataChannel = e.channel;
+            this.dataChannel.binaryType = 'arraybuffer';
+            this.setupDataChannel(this.dataChannel);
+          };
+        } else {
+          console.log('[WebRTC] Receiver received renegotiated offer (ICE restart). Updating remote description...');
         }
-
-        this.pc.ondatachannel = (e) => {
-          console.log('[WebRTC] Receiver ondatachannel event received! Attaching channel...');
-          this.dataChannel = e.channel;
-          this.dataChannel.binaryType = 'arraybuffer';
-          this.setupDataChannel(this.dataChannel);
-        };
 
         await this.pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
         this.timing.remoteDescSet = performance.now();
@@ -470,6 +621,7 @@ export class WebRTCManager {
           await this.pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
           this.timing.remoteDescSet = performance.now();
           console.log(`[WebRTC] Sender setRemoteDescription(answer) succeeded (+${(this.timing.remoteDescSet - this.timing.signalingStart).toFixed(0)} ms).`);
+          this.isRestartingIce = false;
           await this.drainPendingCandidates();
         }
       }
@@ -478,10 +630,15 @@ export class WebRTCManager {
         this.timing.firstCandidate = performance.now();
       }
       const candidate = new RTCIceCandidate(data.candidate);
+      const type = candidate.type || 'unknown';
+      if (this.candidateStats.remote[type] !== undefined) {
+        this.candidateStats.remote[type]++;
+      }
+      console.log(`[WebRTC ICE Remote Candidate #${this.candidateStats.remote[type] || 1}] Added candidate: ${candidate.type} | Protocol: ${candidate.protocol} (${candidate.address || 'mDNS'})`);
+
       if (this.pc && this.pc.remoteDescription && this.pc.remoteDescription.type) {
         try {
           await this.pc.addIceCandidate(candidate);
-          console.log(`[WebRTC ICE Remote Candidate] Added candidate: ${candidate.type} | Protocol: ${candidate.protocol} (${candidate.address || 'mDNS'})`);
 
           // If mDNS .local candidate is received and we know the local LAN IP, synthesize a parallel direct IP candidate
           if (this.serverLocalIp && this.serverLocalIp !== 'localhost' && candidate.candidate && candidate.candidate.includes('.local')) {
@@ -862,11 +1019,17 @@ export class WebRTCManager {
       if (iceState === 'failed') {
         shouldAlert = true;
         warningMessage = 'Connection failed. Attempting ICE restart...';
+        if (!this.isRestartingIce) {
+          this.triggerIceRestart();
+        }
       } else if (iceState === 'disconnected') {
         // Disconnected for at least 4 seconds of truly zero byte progress
         if (this.zeroProgressCount >= 4) {
           shouldAlert = true;
-          warningMessage = 'Network connection disrupted. Waiting for peer to reconnect...';
+          warningMessage = 'Network connection disrupted. Reconnecting peers...';
+          if (!this.isRestartingIce && this.zeroProgressCount % 4 === 0) {
+            this.triggerIceRestart();
+          }
         }
       } else if (iceState === 'checking' && this.checkingDuration >= 8) {
         shouldAlert = true;
@@ -1001,6 +1164,12 @@ export class WebRTCManager {
     }
     this.receivedChunks = [];
     this.pendingCandidates = [];
+    this.isRestartingIce = false;
+    this.iceRestartCount = 0;
+    this.candidateStats = {
+      local: { host: 0, srflx: 0, prflx: 0, relay: 0 },
+      remote: { host: 0, srflx: 0, prflx: 0, relay: 0 }
+    };
   }
 
   setServerLocalIp(ip) {

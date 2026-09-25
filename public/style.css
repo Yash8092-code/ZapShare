@@ -1178,6 +1178,68 @@ h1, h2, h3, .brand-name, .percentage-num, .pin-box, .otp-digit {
   animation: laserScan 2.2s ease-in-out infinite;
 }
 
+/* Camera Error Card Overlay inside Scanner Viewport */
+.camera-error-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 20px;
+  background: rgba(10, 13, 22, 0.94);
+  backdrop-filter: blur(10px);
+  text-align: center;
+  z-index: 10;
+  gap: 10px;
+  animation: fadeIn 0.25s ease-out;
+}
+
+.camera-error-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: rgba(239, 68, 68, 0.14);
+  border: 1px solid rgba(239, 68, 68, 0.32);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 20px rgba(239, 68, 68, 0.2);
+}
+
+.camera-error-title {
+  color: #F87171;
+  font-size: 0.95rem;
+  font-weight: 700;
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+
+.camera-error-msg {
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  line-height: 1.45;
+  margin: 0;
+  max-width: 240px;
+}
+
+.camera-error-badge {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: #FCA5A5;
+  background: rgba(239, 68, 68, 0.12);
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(239, 68, 68, 0.24);
+}
+
+.camera-fallback-btn {
+  margin-top: 4px;
+  font-size: 0.8rem;
+  padding: 8px 14px;
+  gap: 6px;
+}
+
 /* Incoming File Inspection Card */
 .inspect-card {
   padding: 36px 32px;

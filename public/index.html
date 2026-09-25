@@ -391,15 +391,38 @@
             <div class="receive-pane hidden" id="pane-recv-qr">
               <div class="scanner-viewport-box">
                 <video id="qr-video" playsinline></video>
-                <div class="scanner-overlay">
+                <div class="scanner-overlay" id="qr-scanner-overlay">
                   <div class="viewfinder-corner top-left"></div>
                   <div class="viewfinder-corner top-right"></div>
                   <div class="viewfinder-corner bottom-left"></div>
                   <div class="viewfinder-corner bottom-right"></div>
                   <div class="scanner-laser"></div>
                 </div>
+
+                <!-- Camera Error Diagnostic Card Overlay -->
+                <div class="camera-error-overlay hidden" id="qr-camera-error">
+                  <div class="camera-error-icon">
+                    <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="#EF4444" stroke-width="2">
+                      <line x1="1" y1="1" x2="23" y2="23"></line>
+                      <path d="M21 21H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3m3-3h6l2 3h4a2 2 0 0 1 2 2v9.34"></path>
+                      <circle cx="12" cy="13" r="4"></circle>
+                    </svg>
+                  </div>
+                  <h4 class="camera-error-title" id="camera-error-title">Camera Unavailable</h4>
+                  <p class="camera-error-msg" id="camera-error-msg">Could not access device camera.</p>
+                  <div class="camera-error-badge" id="camera-error-code">Code: NotAllowedError</div>
+                  <button class="btn btn-primary btn-sm camera-fallback-btn" id="btn-camera-fallback-pin">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                      <line x1="4" y1="9" x2="20" y2="9"></line>
+                      <line x1="4" y1="15" x2="20" y2="15"></line>
+                      <line x1="10" y1="3" x2="8" y2="21"></line>
+                      <line x1="16" y1="3" x2="14" y2="21"></line>
+                    </svg>
+                    Use 6-Digit Code Instead
+                  </button>
+                </div>
               </div>
-              <p class="pairing-hint">Align the QR code within the target frame</p>
+              <p class="pairing-hint" id="qr-scanner-hint">Align the QR code within the target frame</p>
               <div class="qr-camera-controls">
                 <button class="btn btn-secondary" id="btn-stop-camera">Cancel Camera</button>
               </div>

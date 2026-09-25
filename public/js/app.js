@@ -80,6 +80,13 @@ const recvErrorBanner = document.getElementById('recv-error-banner');
 const recvErrorText = document.getElementById('recv-error-text');
 
 const qrVideo = document.getElementById('qr-video');
+const qrScannerOverlay = document.getElementById('qr-scanner-overlay');
+const qrCameraError = document.getElementById('qr-camera-error');
+const cameraErrorTitle = document.getElementById('camera-error-title');
+const cameraErrorMsg = document.getElementById('camera-error-msg');
+const cameraErrorCode = document.getElementById('camera-error-code');
+const btnCameraFallbackPin = document.getElementById('btn-camera-fallback-pin');
+const qrScannerHint = document.getElementById('qr-scanner-hint');
 const btnStopCamera = document.getElementById('btn-stop-camera');
 
 const inspectFileName = document.getElementById('inspect-file-name');
@@ -484,6 +491,8 @@ btnRecvPinMode.addEventListener('click', () => {
   btnRecvQrMode.classList.remove('active');
   paneRecvPin.classList.remove('hidden');
   paneRecvQr.classList.add('hidden');
+  if (qrCameraError) qrCameraError.classList.add('hidden');
+  if (qrScannerOverlay) qrScannerOverlay.classList.remove('hidden');
   qrEngine.stopCamera();
 });
 
@@ -493,6 +502,11 @@ btnRecvQrMode.addEventListener('click', () => {
   btnRecvPinMode.classList.remove('active');
   paneRecvQr.classList.remove('hidden');
   paneRecvPin.classList.add('hidden');
+
+  // Reset scanner viewport states
+  if (qrCameraError) qrCameraError.classList.add('hidden');
+  if (qrScannerOverlay) qrScannerOverlay.classList.remove('hidden');
+  if (qrScannerHint) qrScannerHint.textContent = 'Align the QR code within the target frame';
 
   // Start Camera
   qrEngine.startCamera(qrVideo, (scannedText) => {
@@ -509,9 +523,27 @@ btnRecvQrMode.addEventListener('click', () => {
       webrtc.joinRoomWithPin(pin);
     }
   }, (err) => {
-    showReceiveError(err);
+    console.error('[ZapShare QR Camera Error]', err);
+    if (qrScannerOverlay) qrScannerOverlay.classList.add('hidden');
+    if (qrCameraError) {
+      if (cameraErrorTitle) cameraErrorTitle.textContent = err.title || 'Camera Unavailable';
+      if (cameraErrorMsg) cameraErrorMsg.textContent = err.message || 'Could not access device camera.';
+      if (cameraErrorCode) cameraErrorCode.textContent = `Code: ${err.name || 'Error'}`;
+      qrCameraError.classList.remove('hidden');
+    }
+    if (qrScannerHint) {
+      qrScannerHint.textContent = 'Camera blocked or unavailable. Use 6-digit code pairing.';
+    }
+    sound.playDecline();
   });
 });
+
+if (btnCameraFallbackPin) {
+  btnCameraFallbackPin.addEventListener('click', () => {
+    sound.playClick();
+    btnRecvPinMode.click();
+  });
+}
 
 btnStopCamera.addEventListener('click', () => {
   sound.playClick();

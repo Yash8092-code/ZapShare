@@ -67,17 +67,22 @@ export class QREngine {
     }
   }
 
-  // Camera QR Scanner with dual fallback: Native BarcodeDetector -> jsQR
-  async startCamera(videoElement, onScanCallback, onErrorCallback) {
+  // Multi-tier camera stream acquisition with graceful degradation:
+  // Tier 1: Rear camera with ideal HD resolution (mobile default)
+  // Tier 2: Rear camera with loose constraints
+  // Tier 3: Front camera ('user' facingMode, laptop/webcam default)
+  // Tier 4: Any available video device (desktop fallback without facingMode)
+  async getCameraStream() {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      if (onErrorCallback) onErrorCallback('Camera API not supported in this browser context.');
-      return;
+      const err = new Error('Camera API (getUserMedia) not supported in this browser environment. Ensure HTTPS is active.');
+      err.name = 'NotSupportedError';
+      throw err;
     }
 
-    this.stopCamera();
-
+    // Tier 1: Rear camera HD
     try {
-      this.videoStream = await navigator.mediaDevices.getUserMedia({
+      console.log('[QR Camera] Attempting Tier 1: Rear camera HD (facingMode: environment)...');
+      return await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: { ideal: 'environment' },
           width: { ideal: 1280 },
@@ -85,6 +90,56 @@ export class QREngine {
         },
         audio: false
       });
+    } catch (e1) {
+      console.warn('[QR Camera] Tier 1 failed:', e1.name, e1.message);
+      // If user denied permission explicitly, abort immediately to respect user choice
+      if (e1.name === 'NotAllowedError' || e1.name === 'PermissionDeniedError') {
+        throw e1;
+      }
+    }
+
+    // Tier 2: Rear camera loose constraints
+    try {
+      console.log('[QR Camera] Attempting Tier 2: Rear camera basic constraints...');
+      return await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' } },
+        audio: false
+      });
+    } catch (e2) {
+      console.warn('[QR Camera] Tier 2 failed:', e2.name, e2.message);
+      if (e2.name === 'NotAllowedError' || e2.name === 'PermissionDeniedError') {
+        throw e2;
+      }
+    }
+
+    // Tier 3: Front camera / User facing
+    try {
+      console.log('[QR Camera] Attempting Tier 3: Front/User camera...');
+      return await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'user' },
+        audio: false
+      });
+    } catch (e3) {
+      console.warn('[QR Camera] Tier 3 failed:', e3.name, e3.message);
+      if (e3.name === 'NotAllowedError' || e3.name === 'PermissionDeniedError') {
+        throw e3;
+      }
+    }
+
+    // Tier 4: Absolute fallback - any video device (desktop PCs, external webcams, virtual cameras)
+    console.log('[QR Camera] Attempting Tier 4: Any available video capture device (desktop fallback)...');
+    return await navigator.mediaDevices.getUserMedia({
+      video: true,
+      audio: false
+    });
+  }
+
+  // Camera QR Scanner with dual fallback: Native BarcodeDetector -> jsQR
+  async startCamera(videoElement, onScanCallback, onErrorCallback) {
+    this.stopCamera();
+
+    try {
+      this.videoStream = await this.getCameraStream();
 
       videoElement.setAttribute('playsinline', 'true');
       videoElement.setAttribute('autoplay', 'true');
@@ -92,6 +147,7 @@ export class QREngine {
       videoElement.srcObject = this.videoStream;
       await videoElement.play();
 
+      console.log('[QR Camera] Camera stream active and playing.');
       this.isScanning = true;
 
       // Offscreen canvas for frame analysis
@@ -165,12 +221,56 @@ export class QREngine {
       this.scanRafId = requestAnimationFrame(scanLoop);
 
     } catch (err) {
-      console.warn('Camera access denied or unavailable:', err);
+      console.error('[QR Camera] Camera acquisition failed:', err.name, err.message, err);
       this.isScanning = false;
-      const errorMsg = err.name === 'NotAllowedError' 
-        ? 'Camera permission denied. Please allow camera access in browser settings.' 
-        : (err.message || 'Camera unavailable.');
-      if (onErrorCallback) onErrorCallback(errorMsg);
+      this.stopCamera();
+
+      // Formulate detailed, user-actionable error info
+      let userTitle = 'Camera Unavailable';
+      let userAdvice = 'Could not access the camera on this device.';
+
+      switch (err.name) {
+        case 'NotAllowedError':
+        case 'PermissionDeniedError':
+          userTitle = 'Camera Permission Blocked';
+          userAdvice = 'Camera access was blocked by the browser. Click the site settings/lock icon in your address bar to allow camera access.';
+          break;
+        case 'NotFoundError':
+        case 'DevicesNotFoundError':
+          userTitle = 'No Camera Detected';
+          userAdvice = 'No camera hardware found on this device (e.g. desktop PC without a webcam). Please use 6-digit PIN code pairing.';
+          break;
+        case 'NotReadableError':
+        case 'TrackStartError':
+          userTitle = 'Camera In Use / Hardware Busy';
+          userAdvice = 'The camera is being used by another application (Zoom, Teams, or another tab). Close other apps or use PIN code.';
+          break;
+        case 'OverconstrainedError':
+          userTitle = 'Camera Format Unsupported';
+          userAdvice = 'Your camera does not meet requested video constraints. Please use 6-digit PIN pairing.';
+          break;
+        case 'SecurityError':
+          userTitle = 'Insecure Context / Security Policy';
+          userAdvice = 'Browser security policy prevented camera access. Please use HTTPS.';
+          break;
+        case 'NotSupportedError':
+          userTitle = 'Camera API Not Supported';
+          userAdvice = 'getUserMedia is not supported by your current browser environment.';
+          break;
+        default:
+          userTitle = 'Camera Error (' + (err.name || 'Unknown') + ')';
+          userAdvice = err.message || 'An unexpected error occurred while starting the camera.';
+          break;
+      }
+
+      const errorPayload = {
+        name: err.name || 'Error',
+        message: userAdvice,
+        title: userTitle,
+        rawMessage: err.message || ''
+      };
+
+      if (onErrorCallback) onErrorCallback(errorPayload);
     }
   }
 
