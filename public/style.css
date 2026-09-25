@@ -148,52 +148,172 @@ h1, h2, h3, .brand-name, .percentage-num, .pin-box, .otp-digit {
 .brand-group {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 14px;
   cursor: pointer;
   user-select: none;
+  padding: 4px 6px;
+  border-radius: 16px;
+  transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.logo-mark {
-  width: 36px;
-  height: 36px;
-  border-radius: 10px;
-  background: linear-gradient(135deg, var(--accent-violet), var(--accent-cyan));
+.brand-group:hover {
+  transform: translateY(-1px);
+}
+
+.brand-group:active {
+  transform: scale(0.97);
+}
+
+/* Fancy Logo Mark Wrapper */
+.fancy-logo-wrapper {
+  position: relative;
+  width: 44px;
+  height: 44px;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #fff;
-  box-shadow: 0 0 20px rgba(139, 92, 246, 0.4);
 }
 
-.zap-icon {
-  width: 20px;
-  height: 20px;
+/* Atmospheric Ambient Aura */
+.logo-ambient-aura {
+  position: absolute;
+  inset: -3px;
+  border-radius: 16px;
+  background: radial-gradient(circle, rgba(0, 240, 255, 0.45) 0%, rgba(139, 92, 246, 0.35) 45%, rgba(236, 72, 153, 0) 75%);
+  filter: blur(10px);
+  opacity: 0.65;
+  transition: opacity 0.4s ease, transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+  pointer-events: none;
+  z-index: 0;
 }
 
+.brand-group:hover .logo-ambient-aura {
+  opacity: 1;
+  transform: scale(1.18);
+  filter: blur(14px);
+}
+
+/* Logo SVG */
+.fancy-logo-svg {
+  position: relative;
+  z-index: 1;
+  width: 42px;
+  height: 42px;
+  transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1), filter 0.35s ease;
+  filter: drop-shadow(0 4px 14px rgba(0, 0, 0, 0.5));
+}
+
+.brand-group:hover .fancy-logo-svg {
+  transform: translateY(-1.5px) scale(1.04);
+  filter: drop-shadow(0 6px 20px rgba(139, 92, 246, 0.55));
+}
+
+/* Orbit Dash Animations */
+.logo-orbit-ring {
+  animation: orbit-dash-cw 7s linear infinite;
+}
+
+.logo-orbit-ring-rev {
+  animation: orbit-dash-ccw 7s linear infinite;
+}
+
+@keyframes orbit-dash-cw {
+  from { stroke-dashoffset: 0; }
+  to { stroke-dashoffset: 26; }
+}
+
+@keyframes orbit-dash-ccw {
+  from { stroke-dashoffset: 26; }
+  to { stroke-dashoffset: 0; }
+}
+
+/* P2P Node Satellites Pulse */
+.node-cyan {
+  animation: node-pulse-cyan 2.4s ease-in-out infinite alternate;
+}
+
+.node-pink {
+  animation: node-pulse-pink 2.4s ease-in-out infinite alternate 1.2s;
+}
+
+@keyframes node-pulse-cyan {
+  0% { transform: scale(0.9); opacity: 0.75; }
+  100% { transform: scale(1.2); opacity: 1; filter: drop-shadow(0 0 6px #00F0FF); }
+}
+
+@keyframes node-pulse-pink {
+  0% { transform: scale(0.9); opacity: 0.75; }
+  100% { transform: scale(1.2); opacity: 1; filter: drop-shadow(0 0 6px #EC4899); }
+}
+
+/* Lightning Bolt Glow on Hover */
+.logo-bolt-body {
+  transition: filter 0.3s ease, transform 0.3s ease;
+}
+
+.brand-group:hover .logo-bolt-body {
+  filter: drop-shadow(0 0 8px rgba(0, 240, 255, 0.85)) drop-shadow(0 0 16px rgba(236, 72, 153, 0.7));
+}
+
+/* Brand Text & Typography */
 .brand-text {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
 }
 
 .brand-name {
-  font-size: 1.25rem;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  background: linear-gradient(180deg, #FFFFFF 0%, #E2E8F0 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
+  font-size: 1.35rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  display: inline-flex;
+  align-items: baseline;
+  font-family: 'Space Grotesk', var(--font-sans);
 }
 
-.brand-badge {
-  font-size: 0.65rem;
+.brand-name-zap {
+  background: linear-gradient(135deg, #00F0FF 0%, #8B5CF6 55%, #EC4899 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  text-shadow: 0 0 24px rgba(139, 92, 246, 0.45);
+  font-style: italic;
+  padding-right: 1px;
+  transition: filter 0.3s ease;
+}
+
+.brand-group:hover .brand-name-zap {
+  filter: drop-shadow(0 0 10px rgba(0, 240, 255, 0.5));
+}
+
+.brand-name-share {
+  background: linear-gradient(180deg, #FFFFFF 20%, #CBD5E1 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
   font-weight: 700;
-  letter-spacing: 0.08em;
-  color: var(--accent-cyan);
-  background: rgba(6, 182, 212, 0.12);
-  border: 1px solid rgba(6, 182, 212, 0.3);
-  padding: 2px 7px;
-  border-radius: 6px;
+  font-style: normal;
+}
+
+.brand-spark {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #00F0FF;
+  box-shadow: 0 0 8px #00F0FF, 0 0 16px rgba(6, 182, 212, 0.7);
+  margin-bottom: 2px;
+  animation: spark-beacon 3s ease-in-out infinite;
+}
+
+@keyframes spark-beacon {
+  0%, 100% {
+    opacity: 0.45;
+    transform: scale(0.85);
+    box-shadow: 0 0 6px #00F0FF;
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.25);
+    box-shadow: 0 0 12px #00F0FF, 0 0 20px rgba(6, 182, 212, 0.9);
+  }
 }
 
 /* Mode Switcher Nav */
@@ -1589,6 +1709,20 @@ h1, h2, h3, .brand-name, .percentage-num, .pin-box, .otp-digit {
     gap: 12px;
     padding: 10px 14px;
     border-radius: 16px;
+  }
+
+  .fancy-logo-wrapper {
+    width: 38px;
+    height: 38px;
+  }
+
+  .fancy-logo-svg {
+    width: 36px;
+    height: 36px;
+  }
+
+  .brand-name {
+    font-size: 1.2rem;
   }
 
   .mode-nav {

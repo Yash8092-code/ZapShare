@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 44 44" fill="none">
+  <defs>
+    <linearGradient id="favBg" x1="0" y1="0" x2="44" y2="44" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#141829" />
+      <stop offset="100%" stop-color="#0c0e17" />
+    </linearGradient>
+    <linearGradient id="favBorder" x1="0" y1="0" x2="44" y2="44" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#00F0FF" />
+      <stop offset="50%" stop-color="#8B5CF6" />
+      <stop offset="100%" stop-color="#EC4899" />
+    </linearGradient>
+    <linearGradient id="favBolt" x1="12" y1="7" x2="32" y2="37" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#00F0FF" />
+      <stop offset="40%" stop-color="#8B5CF6" />
+      <stop offset="100%" stop-color="#EC4899" />
+    </linearGradient>
+    <linearGradient id="favFacet" x1="14" y1="7" x2="24" y2="24" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.8" />
+      <stop offset="100%" stop-color="#38BDF8" stop-opacity="0.1" />
+    </linearGradient>
+    <filter id="favGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="1.5" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <!-- Container Squircle -->
+  <rect x="2" y="2" width="40" height="40" rx="12" fill="url(#favBg)" stroke="url(#favBorder)" stroke-width="1.8" />
+  
+  <!-- Orbit Node Rings -->
+  <path d="M9 22 A 13 13 0 0 1 31 10" stroke="url(#favBorder)" stroke-width="1.8" stroke-linecap="round" stroke-dasharray="3 3.5" opacity="0.85" />
+  <path d="M35 22 A 13 13 0 0 1 13 34" stroke="url(#favBorder)" stroke-width="1.8" stroke-linecap="round" stroke-dasharray="3 3.5" opacity="0.85" />
+  
+  <!-- Nodes -->
+  <circle cx="31" cy="10" r="2.2" fill="#00F0FF" />
+  <circle cx="13" cy="34" r="2.2" fill="#EC4899" />
+
+  <!-- Core Zap Bolt -->
+  <path d="M24.5 7 L12 22.5 H21 L17.5 37 L32 20.5 H22.5 L26 7 Z" fill="url(#favBolt)" filter="url(#favGlow)" />
+  <path d="M24.5 7 L14 22.5 H21 L18.5 31 L21.5 21.5 H25.5 L26 7 Z" fill="url(#favFacet)" />
+</svg>
