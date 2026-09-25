@@ -33,30 +33,27 @@
           <div class="logo-ambient-aura"></div>
           <svg class="fancy-logo-svg" viewBox="0 0 44 44" fill="none" xmlns="http://www.w3.org/2000/svg">
             <defs>
-              <linearGradient id="zapBg" x1="0" y1="0" x2="44" y2="44" gradientUnits="userSpaceOnUse">
-                <stop offset="0%" stop-color="#14182b" stop-opacity="0.9" />
-                <stop offset="100%" stop-color="#0b0d18" stop-opacity="0.95" />
+              <linearGradient id="zapShieldBg" x1="0" y1="0" x2="44" y2="44" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#141829" />
+                <stop offset="100%" stop-color="#0a0c16" />
               </linearGradient>
               <linearGradient id="zapBorder" x1="0" y1="0" x2="44" y2="44" gradientUnits="userSpaceOnUse">
                 <stop offset="0%" stop-color="#00F0FF" />
-                <stop offset="45%" stop-color="#8B5CF6" />
+                <stop offset="50%" stop-color="#8B5CF6" />
                 <stop offset="100%" stop-color="#EC4899" />
               </linearGradient>
-              <linearGradient id="zapBolt" x1="12" y1="7" x2="32" y2="37" gradientUnits="userSpaceOnUse">
-                <stop offset="0%" stop-color="#38BDF8" />
-                <stop offset="35%" stop-color="#818CF8" />
-                <stop offset="70%" stop-color="#C084FC" />
-                <stop offset="100%" stop-color="#F43F5E" />
-              </linearGradient>
-              <linearGradient id="zapFacet" x1="14" y1="7" x2="24" y2="24" gradientUnits="userSpaceOnUse">
-                <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.9" />
-                <stop offset="60%" stop-color="#67E8F9" stop-opacity="0.5" />
-                <stop offset="100%" stop-color="#A855F7" stop-opacity="0" />
-              </linearGradient>
-              <linearGradient id="zapOrbit" x1="6" y1="6" x2="38" y2="38" gradientUnits="userSpaceOnUse">
+              <linearGradient id="zapTopWing" x1="10" y1="10" x2="34" y2="20" gradientUnits="userSpaceOnUse">
                 <stop offset="0%" stop-color="#00F0FF" />
-                <stop offset="50%" stop-color="#8B5CF6" stop-opacity="0.2" />
+                <stop offset="100%" stop-color="#818CF8" />
+              </linearGradient>
+              <linearGradient id="zapBottomWing" x1="10" y1="24" x2="34" y2="34" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#C084FC" />
                 <stop offset="100%" stop-color="#EC4899" />
+              </linearGradient>
+              <linearGradient id="zapBridge" x1="14" y1="30" x2="30" y2="14" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#EC4899" />
+                <stop offset="50%" stop-color="#FFFFFF" />
+                <stop offset="100%" stop-color="#00F0FF" />
               </linearGradient>
               <filter id="neonGlow" x="-30%" y="-30%" width="160%" height="160%">
                 <feGaussianBlur stdDeviation="2" result="blur" />
@@ -65,21 +62,30 @@
             </defs>
 
             <!-- Base Glass Squircle -->
-            <rect class="logo-squircle" x="2" y="2" width="40" height="40" rx="12" fill="url(#zapBg)" stroke="url(#zapBorder)" stroke-width="1.6" />
+            <rect class="logo-squircle" x="2" y="2" width="40" height="40" rx="12" fill="url(#zapShieldBg)" stroke="url(#zapBorder)" stroke-width="1.6" />
             <rect x="3" y="3" width="38" height="18" rx="11" fill="white" fill-opacity="0.04" />
 
             <!-- Orbital Data Rings -->
-            <path class="logo-orbit-ring" d="M9 22 A 13 13 0 0 1 31 10" stroke="url(#zapOrbit)" stroke-width="1.8" stroke-linecap="round" stroke-dasharray="3 3.5" opacity="0.85" />
-            <path class="logo-orbit-ring-rev" d="M35 22 A 13 13 0 0 1 13 34" stroke="url(#zapOrbit)" stroke-width="1.8" stroke-linecap="round" stroke-dasharray="3 3.5" opacity="0.85" />
+            <path class="logo-orbit-ring" d="M9 22 A 13 13 0 0 1 31 10" stroke="url(#zapBorder)" stroke-width="1.8" stroke-linecap="round" stroke-dasharray="3 3.5" opacity="0.85" />
+            <path class="logo-orbit-ring-rev" d="M35 22 A 13 13 0 0 1 13 34" stroke="url(#zapBorder)" stroke-width="1.8" stroke-linecap="round" stroke-dasharray="3 3.5" opacity="0.85" />
 
             <!-- P2P Node Satellites -->
             <circle class="logo-node node-cyan" cx="31" cy="10" r="2.2" fill="#00F0FF" filter="url(#neonGlow)" />
             <circle class="logo-node node-pink" cx="13" cy="34" r="2.2" fill="#EC4899" filter="url(#neonGlow)" />
 
-            <!-- Faceted Zap Lightning Bolt -->
-            <path class="logo-bolt-body" d="M24.5 7 L12 22.5 H21 L17.5 37 L32 20.5 H22.5 L26 7 Z" fill="url(#zapBolt)" filter="url(#neonGlow)" />
-            <path class="logo-bolt-facet" d="M24.5 7 L14 22.5 H21 L18.5 32 L22 21.5 H25.5 L26 7 Z" fill="url(#zapFacet)" />
-            <polygon points="21,18 24,19.5 22,23 20.5,20.5" fill="#FFFFFF" opacity="0.9" />
+            <!-- Quantum Fold "Z" Prism Facets -->
+            <!-- Top Wing (Sender Stream) -->
+            <path class="logo-prism-wing top-wing" d="M 12 11.5 H 31.5 C 32.8 11.5 33.6 12.8 33 13.9 L 27.2 21.5 H 18.5 L 24 15.5 H 12 Z" fill="url(#zapTopWing)" filter="url(#neonGlow)" />
+            
+            <!-- Diagonal Quantum Data Corridor -->
+            <path class="logo-prism-bridge" d="M 28 17 L 16 27" stroke="url(#zapBridge)" stroke-width="3.2" stroke-linecap="round" filter="url(#neonGlow)" />
+
+            <!-- Bottom Wing (Receiver Stream) -->
+            <path class="logo-prism-wing bottom-wing" d="M 32 32.5 H 12.5 C 11.2 32.5 10.4 31.2 11 30.1 L 16.8 22.5 H 25.5 L 20 28.5 H 32 Z" fill="url(#zapBottomWing)" filter="url(#neonGlow)" />
+
+            <!-- Central Supercharged Photon Diamond Core -->
+            <polygon class="logo-photon-core" points="22,18 25.5,22 22,26 18.5,22" fill="#FFFFFF" filter="url(#neonGlow)" />
+            <circle cx="22" cy="22" r="1.5" fill="#00F0FF" />
           </svg>
         </div>
         <div class="brand-text">
@@ -635,6 +641,10 @@
     </footer>
 
   </div>
+
+  <!-- QR Generator & Scanner Vendor Utilities (Self-contained, 100% offline / LAN capable) -->
+  <script src="js/vendor/qrcode.js"></script>
+  <script src="js/vendor/jsqr.js"></script>
 
   <!-- Client Application Module -->
   <script type="module" src="js/app.js"></script>

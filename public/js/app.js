@@ -390,8 +390,9 @@ function handleFileSelection(file) {
     if (digitEl) digitEl.textContent = pin[i] || '-';
   }
 
-  // Generate pairing URL
-  const baseUrl = serverNetworkInfo ? serverNetworkInfo.fullUrl : window.location.origin;
+  // Generate pairing URL: on cloud deployments (e.g. Vercel), use window.location.origin; on localhost use LAN IP from server
+  const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+  const baseUrl = (!isLocalhost || !serverNetworkInfo?.fullUrl) ? window.location.origin : serverNetworkInfo.fullUrl;
   const pairingUrl = `${baseUrl}/?pin=${pin}`;
   shareLinkInput.value = pairingUrl;
 
