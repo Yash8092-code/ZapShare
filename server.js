@@ -37,10 +37,15 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // Network info API for QR codes and client awareness
 app.get('/api/info', (req, res) => {
+  const host = req.get('host');
+  const isCloud = process.env.VERCEL || (host && !host.startsWith('localhost') && !host.startsWith('127.') && !host.startsWith('192.168.'));
+  const proto = req.get('x-forwarded-proto') || (isCloud ? 'https' : 'http');
+  const fullUrl = isCloud && host ? `${proto}://${host}` : `http://${localIp}:${PORT}`;
+
   res.json({
     localIp,
     port: PORT,
-    fullUrl: `http://${localIp}:${PORT}`
+    fullUrl
   });
 });
 
