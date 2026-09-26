@@ -1,11 +1,13 @@
 // ZapShare WebRTC Core: Direct P2P High-Throughput Transfer Engine
 // Backpressure-governed SCTP, Dual-Channel Control & Data Protocol, Streaming OPFS Storage & Integrity Verification
 import { sound } from './sound.js';
-import { TransferState, ControlMessageType, RouteType, TransferDefaults } from './transfer/constants.js';
+import { TransferState, ControlMessageType, RouteType, TransferDefaults, TransferMode, DeviceClass } from './transfer/constants.js';
 import { TransferStateMachine } from './transfer/state-machine.js';
 import { SenderPipeline } from './transfer/sender-pipeline.js';
 import { ReceiverPipeline } from './transfer/receiver-pipeline.js';
 import { TransferDiagnostics } from './transfer/diagnostics.js';
+import { DeviceProfileManager } from './transfer/device-profile.js';
+import { NetworkManager } from './transfer/network-manager.js';
 
 export class WebRTCManager {
   constructor(callbacks = {}) {
@@ -16,6 +18,10 @@ export class WebRTCManager {
     this.pin = null;
     this.fileMeta = null;
     this.file = null;
+
+    // Device Profile & Network Intelligence
+    this.deviceProfile = new DeviceProfileManager();
+    this.networkManager = new NetworkManager();
 
     // Dual-channel architecture:
     // 1. controlChannel: lightweight JSON protocol messages (HEADER, ACK, HEARTBEAT, PAUSE, RESUME, EOF, VERIFY)
@@ -28,17 +34,26 @@ export class WebRTCManager {
       this.handleStateChange(newState, prevState, reason);
     });
     this.diagnostics = new TransferDiagnostics({ role: this.role || 'sender' });
+    this.diagnostics.updateProgress({
+      deviceClass: this.deviceProfile.deviceClass,
+      transferMode: this.deviceProfile.transferMode
+    });
 
     // Transfer Pipelines
     this.senderPipeline = new SenderPipeline({
       stateMachine: this.stateMachine,
       diagnostics: this.diagnostics,
+      deviceProfile: this.deviceProfile,
+      networkManager: this.networkManager,
       callbacks: {
         onProgress: (prog) => {
           if (this.callbacks.onProgress) this.callbacks.onProgress(prog);
         },
         onStall: (msg) => {
           if (this.callbacks.onStall) this.callbacks.onStall(msg);
+        },
+        onDeviceStress: (msg) => {
+          if (this.callbacks.onConnectionQuality) this.callbacks.onConnectionQuality(msg);
         }
       }
     });
@@ -46,6 +61,8 @@ export class WebRTCManager {
     this.receiverPipeline = new ReceiverPipeline({
       stateMachine: this.stateMachine,
       diagnostics: this.diagnostics,
+      deviceProfile: this.deviceProfile,
+      networkManager: this.networkManager,
       callbacks: {
         onProgress: (prog) => {
           if (this.callbacks.onProgress) this.callbacks.onProgress(prog);
@@ -64,6 +81,9 @@ export class WebRTCManager {
         onCancelled: () => {
           this.cleanupTransfer();
           if (this.callbacks.onCancelled) this.callbacks.onCancelled();
+        },
+        onDeviceStress: (msg) => {
+          if (this.callbacks.onConnectionQuality) this.callbacks.onConnectionQuality(msg);
         }
       }
     });
@@ -830,7 +850,37 @@ export class WebRTCManager {
     this.cleanupTransfer();
   }
 
-  cancelTransfer() {
+  setTransferMode(mode) {
+    this.deviceProfile.setTransferMode(mode);
+    const tuning = this.deviceProfile.getTuning();
+    if (this.senderPipeline && this.senderPipeline.backpressure) {
+      this.senderPipeline.backpressure.applyTuning(tuning);
+    }
+    if (this.diagnostics) {
+      this.diagnostics.updateProgress({
+        transferMode: mode,
+        deviceClass: this.deviceProfile.deviceClass
+      });
+    }
+  }
+
+  getTransferMode() {
+    return this.deviceProfile.transferMode;
+  }
+
+  getDeviceClass() {
+    return this.deviceProfile.deviceClass;
+  }
+
+  async cancelTransfer() {
+    console.log('[WebRTC] cancelTransfer initiated.');
+    if (this.role === 'sender' && this.isTransferring && this.senderPipeline) {
+      try {
+        await this.senderPipeline.requestStop();
+      } catch (e) {
+        console.warn('[WebRTC] Graceful sender stop handshake error:', e);
+      }
+    }
     this.stateMachine.transition(TransferState.CANCELLED, 'user-cancel');
     this.sendSignal({
       type: 'transfer-action',

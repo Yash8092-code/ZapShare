@@ -1,4 +1,4 @@
-// ZapShare Backpressure Controller
+// ZapShare Backpressure Controller (Phases 5, 6, 7)
 // Deterministic RTCDataChannel flow control with adaptive chunk sizing & zero fake timeouts
 import { TransferDefaults } from './constants.js';
 
@@ -9,14 +9,14 @@ export class BackpressureController {
     this.lowWaterMark = options.lowWaterMark || TransferDefaults.LOW_WATER_MARK;
     this.sctpMaxMessageSize = options.sctpMaxMessageSize || 65536;
 
-    // Chunk size range: 32 KB to 128 KB (capped by sctpMaxMessageSize)
-    const upperLimit = Math.min(TransferDefaults.MAX_CHUNK_SIZE, this.sctpMaxMessageSize);
+    this.minChunkSize = options.minChunkSize || TransferDefaults.MIN_CHUNK_SIZE;
+    const initialUpperLimit = Math.min(options.maxChunkSize || TransferDefaults.MAX_CHUNK_SIZE, this.sctpMaxMessageSize);
+    this.maxChunkSize = initialUpperLimit;
+
     this.currentChunkSize = Math.min(
-      Math.max(TransferDefaults.MIN_CHUNK_SIZE, TransferDefaults.INITIAL_CHUNK_SIZE),
-      upperLimit
+      Math.max(this.minChunkSize, options.initialChunkSize || TransferDefaults.INITIAL_CHUNK_SIZE),
+      this.maxChunkSize
     );
-    this.minChunkSize = TransferDefaults.MIN_CHUNK_SIZE;
-    this.maxChunkSize = upperLimit;
 
     // Metrics & Diagnostics
     this.totalWaitTimeMs = 0;
@@ -25,7 +25,6 @@ export class BackpressureController {
     this.consecutiveFastDrains = 0;
     this.consecutiveCongestions = 0;
 
-    // Configure the underlying DataChannel threshold
     if (this.dataChannel) {
       try {
         this.dataChannel.bufferedAmountLowThreshold = this.lowWaterMark;
@@ -35,11 +34,30 @@ export class BackpressureController {
     }
   }
 
+  applyTuning(tuning) {
+    if (!tuning) return;
+    if (tuning.highWater) this.highWaterMark = tuning.highWater;
+    if (tuning.lowWater) this.lowWaterMark = tuning.lowWater;
+    if (tuning.minChunk) this.minChunkSize = tuning.minChunk;
+    if (tuning.maxChunk) {
+      this.maxChunkSize = Math.min(tuning.maxChunk, this.sctpMaxMessageSize || 262144);
+    }
+    if (tuning.initialChunk && this.waitEventCount === 0) {
+      this.currentChunkSize = Math.min(tuning.initialChunk, this.maxChunkSize);
+    }
+
+    if (this.dataChannel) {
+      try {
+        this.dataChannel.bufferedAmountLowThreshold = this.lowWaterMark;
+      } catch (e) {}
+    }
+  }
+
   updateDataChannel(dataChannel, sctpMax = null) {
     this.dataChannel = dataChannel;
-    if (sctpMax) {
+    if (sctpMax && sctpMax > 0) {
       this.sctpMaxMessageSize = sctpMax;
-      this.maxChunkSize = Math.min(TransferDefaults.MAX_CHUNK_SIZE, sctpMax);
+      this.maxChunkSize = Math.min(this.maxChunkSize, sctpMax);
       if (this.currentChunkSize > this.maxChunkSize) {
         this.currentChunkSize = this.maxChunkSize;
       }
@@ -59,7 +77,6 @@ export class BackpressureController {
     return this.currentChunkSize;
   }
 
-  // Returns true if the channel buffer is above high-water mark
   isCongested() {
     if (!this.dataChannel) return true;
     return this.dataChannel.bufferedAmount >= this.highWaterMark;
@@ -78,7 +95,7 @@ export class BackpressureController {
     // Fast path: buffer already at or below low water mark
     if (this.dataChannel.bufferedAmount <= this.lowWaterMark) {
       this.recordFastDrain();
-      return;
+      return 0;
     }
 
     const waitStart = performance.now();
@@ -111,7 +128,6 @@ export class BackpressureController {
       };
 
       const onLow = () => {
-        // Double-check buffer level (some browsers fire bufferedamountlow slightly before full drain)
         if (this.dataChannel && this.dataChannel.bufferedAmount <= this.lowWaterMark) {
           finishSuccess();
         }
@@ -157,13 +173,12 @@ export class BackpressureController {
     });
   }
 
-  // Adaptive tuning: increases chunk size after consecutive smooth drain periods
   recordFastDrain() {
     this.consecutiveCongestions = 0;
     this.consecutiveFastDrains++;
 
-    // If we have had 40 consecutive chunks with low buffer and high throughput:
-    if (this.consecutiveFastDrains >= 40) {
+    // After 35 consecutive fast drain chunks, safely step up chunk size
+    if (this.consecutiveFastDrains >= 35) {
       this.consecutiveFastDrains = 0;
       if (this.currentChunkSize < this.maxChunkSize) {
         const nextSize = Math.min(this.currentChunkSize + 32 * 1024, this.maxChunkSize);
@@ -175,19 +190,25 @@ export class BackpressureController {
     }
   }
 
-  // Adaptive tuning: decreases chunk size if channel is hitting backpressure stalls
   recordBackpressurePause(waitDurationMs) {
     this.consecutiveFastDrains = 0;
     this.consecutiveCongestions++;
 
-    // If wait was prolonged or backpressure repeats frequently:
-    if (waitDurationMs > 80 || this.consecutiveCongestions >= 2) {
+    // If wait was prolonged (> 60 ms) or repeated backpressure pauses occurred:
+    if (waitDurationMs > 60 || this.consecutiveCongestions >= 2) {
       this.consecutiveCongestions = 0;
       if (this.currentChunkSize > this.minChunkSize) {
         const prevSize = this.currentChunkSize;
         this.currentChunkSize = Math.max(this.currentChunkSize - 32 * 1024, this.minChunkSize);
         console.log(`[Backpressure Tuning] Congestion detected (waited ${waitDurationMs.toFixed(0)} ms). Stepping down chunk size: ${prevSize / 1024} KB ➔ ${this.currentChunkSize / 1024} KB`);
       }
+    }
+  }
+
+  forceScaleDown() {
+    if (this.currentChunkSize > this.minChunkSize) {
+      this.currentChunkSize = Math.max(this.currentChunkSize - 32 * 1024, this.minChunkSize);
+      console.log(`[Backpressure Tuning] Thermal/device strain scale-down: ${this.currentChunkSize / 1024} KB`);
     }
   }
 
@@ -209,9 +230,5 @@ export class BackpressureController {
     this.isWaiting = false;
     this.consecutiveFastDrains = 0;
     this.consecutiveCongestions = 0;
-    this.currentChunkSize = Math.min(
-      Math.max(TransferDefaults.MIN_CHUNK_SIZE, TransferDefaults.INITIAL_CHUNK_SIZE),
-      this.maxChunkSize
-    );
   }
 }

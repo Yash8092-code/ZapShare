@@ -412,6 +412,35 @@ h1, h2, h3, .brand-name, .percentage-num, .pin-box, .otp-digit {
   color: var(--text-secondary);
 }
 
+.mode-select-container {
+  display: flex;
+  align-items: center;
+}
+
+.mode-select-pill {
+  padding: 6px 12px;
+  background: rgba(12, 14, 20, 0.7);
+  border: 1px solid var(--border-hairline);
+  border-radius: 20px;
+  font-size: 0.8rem;
+  color: var(--text-primary);
+  font-family: inherit;
+  cursor: pointer;
+  outline: none;
+  transition: all 0.2s ease;
+}
+
+.mode-select-pill:hover,
+.mode-select-pill:focus {
+  border-color: var(--accent-cyan);
+  box-shadow: 0 0 12px rgba(6, 182, 212, 0.25);
+}
+
+.mode-select-pill option {
+  background: #0f172a;
+  color: #f8fafc;
+}
+
 .status-dot {
   width: 8px;
   height: 8px;

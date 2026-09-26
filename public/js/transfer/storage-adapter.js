@@ -101,6 +101,7 @@ export class StorageAdapter {
     // Chain write operations sequentially
     this.writeQueue = this.writeQueue.then(async () => {
       try {
+        const writeStart = performance.now();
         if (this.mode === StorageMode.FILE_SYSTEM_ACCESS && this.fileStream) {
           await this.fileStream.write(chunk);
         } else if (this.mode === StorageMode.OPFS && this.opfsWritable) {
@@ -113,6 +114,7 @@ export class StorageAdapter {
             console.warn(`[StorageAdapter] Memory buffer exceeds 1.5 GB (${(this.memoryAllocatedBytes / (1024 * 1024)).toFixed(0)} MB)!`);
           }
         }
+        this.lastWriteLatencyMs = performance.now() - writeStart;
 
         this.bytesWritten += byteLen;
         this.unwrittenBytes = Math.max(0, this.unwrittenBytes - byteLen);

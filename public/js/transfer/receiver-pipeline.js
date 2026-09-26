@@ -1,8 +1,13 @@
 // ZapShare Receiver Pipeline
 // Streaming progressive disk sink, ACK checkpoint flow control, integrity verification, and resume
-import { ControlMessageType, TransferDefaults, StorageMode } from './constants.js';
+// Features strict post-cancel data dropping, adaptive checkpoints, and storage backpressure
+import { ControlMessageType, TransferDefaults, StorageMode, TransferState } from './constants.js';
 import { StorageAdapter } from './storage-adapter.js';
 import { IntegrityManager } from './integrity-manager.js';
+import { CancellationManager } from './cancellation-manager.js';
+import { NetworkManager } from './network-manager.js';
+import { PerformanceManager } from './performance-manager.js';
+import { DeviceProfileManager } from './device-profile.js';
 
 export class ReceiverPipeline {
   constructor(options = {}) {
@@ -11,6 +16,41 @@ export class ReceiverPipeline {
     this.stateMachine = options.stateMachine || null;
     this.diagnostics = options.diagnostics || null;
     this.callbacks = options.callbacks || {};
+
+    // Device, Network, and Performance Managers
+    this.deviceProfile = options.deviceProfile || new DeviceProfileManager();
+    this.networkManager = options.networkManager || new NetworkManager();
+    this.performanceManager = options.performanceManager || new PerformanceManager({
+      deviceProfile: this.deviceProfile,
+      uiThrottleMs: this.deviceProfile.getTuning().uiThrottleMs,
+      callbacks: {
+        onDeviceStress: (msg) => {
+          if (this.callbacks.onDeviceStress) this.callbacks.onDeviceStress(msg);
+        }
+      }
+    });
+
+    // Cancellation Manager (Phase 3 & Phase 26)
+    this.cancellationManager = options.cancellationManager || new CancellationManager({
+      role: 'receiver',
+      stateMachine: this.stateMachine,
+      sendControlFn: (msg) => this.sendControlMessage(msg),
+      diagnostics: this.diagnostics,
+      onCleanupFn: async () => {
+        this.isReceiving = false;
+        // Finish committing pending writes in queue before reporting confirmed checkpoint
+        if (this.storageAdapter) {
+          try {
+            await this.storageAdapter.writeQueue;
+          } catch (e) {}
+        }
+        const confirmed = this.storageAdapter ? this.storageAdapter.bytesWritten : this.receivedBytes;
+        return {
+          confirmedBytes: confirmed,
+          checkpoint: confirmed
+        };
+      }
+    });
 
     this.fileMeta = null;
     this.fileId = null;
@@ -31,6 +71,8 @@ export class ReceiverPipeline {
   setChannels(controlChannel, dataChannel) {
     this.controlChannel = controlChannel;
     this.dataChannel = dataChannel;
+    this.cancellationManager.setSendControl((msg) => this.sendControlMessage(msg));
+
     if (this.dataChannel) {
       this.dataChannel.binaryType = 'arraybuffer';
     }
@@ -53,6 +95,22 @@ export class ReceiverPipeline {
   }
 
   async handleControlMessage(msg) {
+    // 1. Give cancellation manager priority on stop/cancel handshake messages (Phase 3, 26)
+    if (
+      msg.type === ControlMessageType.STOP_REQUEST ||
+      msg.type === ControlMessageType.CANCEL ||
+      msg.type === ControlMessageType.CANCEL_ACK
+    ) {
+      await this.cancellationManager.handleControlMessage(msg);
+      if (msg.type === ControlMessageType.CANCEL) {
+        await this.cleanup();
+        if (this.callbacks.onCancelled) {
+          this.callbacks.onCancelled();
+        }
+      }
+      return;
+    }
+
     switch (msg.type) {
       case ControlMessageType.HEADER: {
         console.log(`[ReceiverPipeline] Received file header: "${msg.name}" (${(msg.size / (1024 * 1024)).toFixed(2)} MB)`);
@@ -67,9 +125,11 @@ export class ReceiverPipeline {
         this.lastAckedBytes = this.receivedBytes;
         this.sessionCheckpointKey = `zap_resume_${this.fileId}`;
 
-        // Initialize streaming storage adapter
+        // Initialize streaming storage adapter with bounded queue
+        const tuning = this.deviceProfile.getTuning();
         this.storageAdapter = new StorageAdapter(this.fileMeta, {
-          fileHandle: this.customFileHandle
+          fileHandle: this.customFileHandle,
+          maxQueueBytes: tuning.maxInMemoryQueue
         });
         const storageMode = await this.storageAdapter.initialize();
 
@@ -77,12 +137,16 @@ export class ReceiverPipeline {
         this.integrityManager = new IntegrityManager();
 
         this.isReceiving = true;
+        this.cancellationManager.reset();
 
         if (this.diagnostics) {
           this.diagnostics.start(this.totalBytes);
           this.diagnostics.updateProgress({
             storageMode,
-            confirmedBytes: this.receivedBytes
+            bytesReceived: this.receivedBytes,
+            bytesConfirmed: this.receivedBytes,
+            deviceClass: this.deviceProfile.deviceClass,
+            transferMode: this.deviceProfile.transferMode
           });
         }
 
@@ -108,24 +172,14 @@ export class ReceiverPipeline {
         await this.handleEof();
         break;
       }
-
-      case ControlMessageType.CANCEL: {
-        console.warn('[ReceiverPipeline] Sender cancelled transfer.');
-        await this.cleanup();
-        if (this.callbacks.onCancelled) {
-          this.callbacks.onCancelled();
-        }
-        break;
-      }
     }
   }
 
   /**
    * Process raw binary chunk from DataChannel
+   * Zero-copy streaming directly to storage & integrity manager
    */
   async handleBinaryChunk(data) {
-    if (!this.isReceiving || !this.storageAdapter) return;
-
     let buffer = data;
     if (data instanceof Blob) {
       buffer = await data.arrayBuffer();
@@ -136,9 +190,18 @@ export class ReceiverPipeline {
     }
 
     const chunkLen = buffer.byteLength;
+
+    // Phase 26 Gatekeeper: Drop any phantom data arriving after STOP_REQUEST or CANCEL
+    if (!this.cancellationManager.shouldAcceptChunk()) {
+      this.cancellationManager.recordDroppedPostCancelData(chunkLen);
+      return;
+    }
+
+    if (!this.isReceiving || !this.storageAdapter) return;
+
     this.receivedBytes += chunkLen;
 
-    // 1. Stream write to storage adapter (OPFS / FileSystem / memory)
+    // 1. Stream write to storage adapter (OPFS / FileSystem / bounded memory)
     this.storageAdapter.write(buffer);
 
     // 2. Stream chunk to integrity hasher
@@ -146,19 +209,30 @@ export class ReceiverPipeline {
       this.integrityManager.update(buffer);
     }
 
-    // 3. Storage backpressure flow control: pause sender if disk falls behind
+    // 3. Measure storage write latency & device strain (Phases 11, 20, 21)
+    const storageLatency = this.storageAdapter.lastWriteLatencyMs || 0;
+    this.performanceManager.recordProcessingEvent(1, storageLatency);
+
+    // 4. Storage backpressure flow control: pause sender if disk falls behind (Phase 11)
     if (this.storageAdapter.isCongested() && !this.isStoragePaused) {
       this.isStoragePaused = true;
-      console.warn('[ReceiverPipeline] Disk writing buffer congested. Pausing sender transmission...');
+      console.warn(`[ReceiverPipeline] Disk writing buffer congested (${(this.storageAdapter.unwrittenBytes / 1024).toFixed(0)} KB queued). Pausing sender transmission...`);
       this.sendControlMessage({ type: ControlMessageType.PAUSE });
+      if (this.stateMachine) {
+        this.stateMachine.transition(TransferState.PAUSED, 'storage-congestion');
+      }
     } else if (!this.storageAdapter.isCongested() && this.isStoragePaused) {
       this.isStoragePaused = false;
       console.log('[ReceiverPipeline] Disk writing caught up. Resuming sender transmission...');
       this.sendControlMessage({ type: ControlMessageType.RESUME, resumeFrom: this.receivedBytes });
+      if (this.stateMachine && this.stateMachine.is(TransferState.PAUSED)) {
+        this.stateMachine.transition(TransferState.TRANSFERRING, 'storage-cleared');
+      }
     }
 
-    // 4. Receiver ACK checkpoint
-    if (this.receivedBytes - this.lastAckedBytes >= this.ackIntervalBytes || this.receivedBytes >= this.totalBytes) {
+    // 5. Receiver ACK checkpoint with dynamic interval based on network speed (Phase 10)
+    const dynamicAckInterval = this.networkManager.getAdaptiveCheckpointInterval();
+    if (this.receivedBytes - this.lastAckedBytes >= dynamicAckInterval || this.receivedBytes >= this.totalBytes) {
       this.lastAckedBytes = this.receivedBytes;
       this.sendControlMessage({
         type: ControlMessageType.ACK,
@@ -180,23 +254,34 @@ export class ReceiverPipeline {
       } catch (e) {}
     }
 
-    // Update UI & diagnostics
+    // 6. Update metrics & diagnostics
+    const confirmedBytes = this.storageAdapter ? this.storageAdapter.bytesWritten : this.receivedBytes;
     if (this.diagnostics) {
       this.diagnostics.updateProgress({
-        transportBytes: this.receivedBytes,
-        confirmedBytes: this.receivedBytes,
-        queueSize: this.storageAdapter.unwrittenBytes
+        bytesReceived: this.receivedBytes,
+        bytesConfirmed: confirmedBytes,
+        queueSize: this.storageAdapter.unwrittenBytes,
+        storageLatencyMs: storageLatency,
+        networkClass: this.networkManager.networkClass,
+        bottleneck: this.networkManager.bottleneck,
+        deviceClass: this.deviceProfile.deviceClass,
+        transferMode: this.deviceProfile.transferMode
       });
     }
 
-    if (this.callbacks.onProgress) {
+    // 7. Throttled UI Progress updates (Phase 15, 29)
+    if (this.callbacks.onProgress && this.performanceManager.shouldUpdateUi()) {
       const snapshot = this.diagnostics ? this.diagnostics.getSnapshot() : {};
+      const effectiveSpeed = snapshot.effectiveSpeedMB || 0;
       this.callbacks.onProgress({
-        percent: this.totalBytes > 0 ? Math.min(100, Math.floor((this.receivedBytes / this.totalBytes) * 100)) : 0,
-        speedMB: snapshot.effectiveSpeedMB || 0,
-        etaSeconds: snapshot.effectiveSpeedMB > 0 ? Math.ceil(((this.totalBytes - this.receivedBytes) / (1024 * 1024)) / snapshot.effectiveSpeedMB) : 0,
-        transferredBytes: this.receivedBytes,
-        totalBytes: this.totalBytes
+        percent: this.totalBytes > 0 ? Math.min(100, Math.floor((confirmedBytes / this.totalBytes) * 100)) : 0,
+        speedMB: effectiveSpeed,
+        etaSeconds: effectiveSpeed > 0 ? Math.ceil(((this.totalBytes - confirmedBytes) / (1024 * 1024)) / effectiveSpeed) : 0,
+        transferredBytes: confirmedBytes,
+        totalBytes: this.totalBytes,
+        statusText: this.networkManager.getStatusMessage(this.stateMachine?.getState(), false),
+        bytesReceived: this.receivedBytes,
+        bytesConfirmed: confirmedBytes
       });
     }
   }
@@ -221,7 +306,7 @@ export class ReceiverPipeline {
         receivedName: this.fileMeta?.name,
         expectedSize: this.totalBytes,
         receivedSize: this.receivedBytes,
-        expectedHash: null, // Verified against size & format
+        expectedHash: null,
         actualHash
       });
 
@@ -290,5 +375,6 @@ export class ReceiverPipeline {
       this.integrityManager.destroy();
       this.integrityManager = null;
     }
+    this.cancellationManager.finishCancellation();
   }
 }

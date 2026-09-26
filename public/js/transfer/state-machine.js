@@ -1,4 +1,4 @@
-// ZapShare Transfer State Machine
+// ZapShare Transfer State Machine (V2.5 Explicit Lifecycle with Stop/Drain/Cancel States)
 import { TransferState } from './constants.js';
 
 export class TransferStateMachine {
@@ -12,63 +12,171 @@ export class TransferStateMachine {
       [TransferState.IDLE]: [
         TransferState.PREPARING,
         TransferState.CONNECTING,
+        TransferState.NEGOTIATING,
         TransferState.READY
       ],
       [TransferState.PREPARING]: [
         TransferState.CONNECTING,
+        TransferState.NEGOTIATING,
         TransferState.READY,
         TransferState.WAITING_FOR_ACCEPT,
+        TransferState.CANCELLING,
         TransferState.CANCELLED,
         TransferState.FAILED
       ],
       [TransferState.CONNECTING]: [
+        TransferState.NEGOTIATING,
         TransferState.READY,
         TransferState.WAITING_FOR_ACCEPT,
         TransferState.TRANSFERRING,
         TransferState.RECONNECTING,
+        TransferState.DISCONNECTED,
+        TransferState.CANCELLING,
+        TransferState.CANCELLED,
+        TransferState.FAILED
+      ],
+      [TransferState.NEGOTIATING]: [
+        TransferState.READY,
+        TransferState.WAITING_FOR_ACCEPT,
+        TransferState.DISCONNECTED,
+        TransferState.CANCELLING,
         TransferState.CANCELLED,
         TransferState.FAILED
       ],
       [TransferState.READY]: [
         TransferState.WAITING_FOR_ACCEPT,
         TransferState.TRANSFERRING,
+        TransferState.STOP_REQUESTED,
+        TransferState.DISCONNECTED,
+        TransferState.CANCELLING,
         TransferState.CANCELLED,
         TransferState.FAILED,
         TransferState.RECONNECTING
       ],
       [TransferState.WAITING_FOR_ACCEPT]: [
         TransferState.TRANSFERRING,
+        TransferState.CANCELLING,
         TransferState.CANCELLED,
         TransferState.FAILED,
         TransferState.IDLE
       ],
       [TransferState.TRANSFERRING]: [
+        TransferState.BACKPRESSURED,
         TransferState.PAUSED_BACKPRESSURE,
+        TransferState.PAUSING,
+        TransferState.PAUSED,
+        TransferState.STOP_REQUESTED,
+        TransferState.DRAINING,
+        TransferState.CANCELLING,
+        TransferState.CANCELLED,
+        TransferState.EOF_SENT,
         TransferState.VERIFYING,
         TransferState.COMPLETED,
+        TransferState.DISCONNECTED,
+        TransferState.RESUMING,
         TransferState.RECONNECTING,
+        TransferState.FAILED
+      ],
+      [TransferState.BACKPRESSURED]: [
+        TransferState.TRANSFERRING,
+        TransferState.PAUSING,
+        TransferState.PAUSED,
+        TransferState.STOP_REQUESTED,
+        TransferState.DRAINING,
+        TransferState.CANCELLING,
         TransferState.CANCELLED,
+        TransferState.EOF_SENT,
+        TransferState.VERIFYING,
+        TransferState.COMPLETED,
+        TransferState.DISCONNECTED,
         TransferState.FAILED
       ],
       [TransferState.PAUSED_BACKPRESSURE]: [
         TransferState.TRANSFERRING,
+        TransferState.BACKPRESSURED,
+        TransferState.PAUSING,
+        TransferState.PAUSED,
+        TransferState.STOP_REQUESTED,
+        TransferState.DRAINING,
+        TransferState.CANCELLING,
+        TransferState.CANCELLED,
+        TransferState.EOF_SENT,
         TransferState.VERIFYING,
         TransferState.COMPLETED,
-        TransferState.RECONNECTING,
+        TransferState.DISCONNECTED,
+        TransferState.FAILED
+      ],
+      [TransferState.PAUSING]: [
+        TransferState.PAUSED,
+        TransferState.TRANSFERRING,
+        TransferState.STOP_REQUESTED,
+        TransferState.CANCELLING,
+        TransferState.CANCELLED,
+        TransferState.FAILED
+      ],
+      [TransferState.PAUSED]: [
+        TransferState.TRANSFERRING,
+        TransferState.BACKPRESSURED,
+        TransferState.STOP_REQUESTED,
+        TransferState.CANCELLING,
+        TransferState.CANCELLED,
+        TransferState.FAILED
+      ],
+      [TransferState.STOP_REQUESTED]: [
+        TransferState.DRAINING,
+        TransferState.CANCELLING,
+        TransferState.CANCELLED,
+        TransferState.FAILED
+      ],
+      [TransferState.DRAINING]: [
+        TransferState.CANCELLING,
+        TransferState.CANCELLED,
+        TransferState.COMPLETED,
+        TransferState.FAILED
+      ],
+      [TransferState.CANCELLING]: [
+        TransferState.CANCELLED,
+        TransferState.FAILED
+      ],
+      [TransferState.EOF_SENT]: [
+        TransferState.VERIFYING,
+        TransferState.COMPLETED,
+        TransferState.CANCELLING,
         TransferState.CANCELLED,
         TransferState.FAILED
       ],
       [TransferState.VERIFYING]: [
         TransferState.COMPLETED,
         TransferState.FAILED,
+        TransferState.CANCELLING,
         TransferState.CANCELLED
+      ],
+      [TransferState.DISCONNECTED]: [
+        TransferState.RESUMING,
+        TransferState.CONNECTING,
+        TransferState.RECONNECTING,
+        TransferState.READY,
+        TransferState.TRANSFERRING,
+        TransferState.CANCELLING,
+        TransferState.CANCELLED,
+        TransferState.FAILED
+      ],
+      [TransferState.RESUMING]: [
+        TransferState.TRANSFERRING,
+        TransferState.BACKPRESSURED,
+        TransferState.DISCONNECTED,
+        TransferState.CANCELLING,
+        TransferState.CANCELLED,
+        TransferState.FAILED
       ],
       [TransferState.RECONNECTING]: [
         TransferState.READY,
         TransferState.TRANSFERRING,
-        TransferState.PAUSED_BACKPRESSURE,
-        TransferState.FAILED,
-        TransferState.CANCELLED
+        TransferState.BACKPRESSURED,
+        TransferState.DISCONNECTED,
+        TransferState.CANCELLING,
+        TransferState.CANCELLED,
+        TransferState.FAILED
       ],
       [TransferState.COMPLETED]: [
         TransferState.IDLE
@@ -78,6 +186,7 @@ export class TransferStateMachine {
       ],
       [TransferState.FAILED]: [
         TransferState.IDLE,
+        TransferState.RESUMING,
         TransferState.RECONNECTING
       ]
     };
@@ -94,8 +203,22 @@ export class TransferStateMachine {
   isActive() {
     return (
       this.currentState === TransferState.TRANSFERRING ||
+      this.currentState === TransferState.BACKPRESSURED ||
       this.currentState === TransferState.PAUSED_BACKPRESSURE ||
-      this.currentState === TransferState.VERIFYING
+      this.currentState === TransferState.PAUSING ||
+      this.currentState === TransferState.PAUSED ||
+      this.currentState === TransferState.DRAINING ||
+      this.currentState === TransferState.EOF_SENT ||
+      this.currentState === TransferState.VERIFYING ||
+      this.currentState === TransferState.RESUMING
+    );
+  }
+
+  isStopping() {
+    return (
+      this.currentState === TransferState.STOP_REQUESTED ||
+      this.currentState === TransferState.DRAINING ||
+      this.currentState === TransferState.CANCELLING
     );
   }
 

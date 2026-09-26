@@ -123,6 +123,15 @@
           <span class="status-label" id="network-status-text">P2P Ready</span>
         </div>
 
+        <!-- Transfer Mode Selector (Phase 8: Balanced, Device Friendly, Maximum Speed) -->
+        <div class="mode-select-container" title="Transfer Optimization Profile">
+          <select id="select-transfer-mode" class="mode-select-pill" aria-label="Transfer Mode">
+            <option value="BALANCED">⚡ Balanced</option>
+            <option value="DEVICE_FRIENDLY">🔋 Device Friendly</option>
+            <option value="MAXIMUM_SPEED">🚀 Max Speed</option>
+          </select>
+        </div>
+
         <!-- Audio Toggle Button -->
         <button class="action-btn icon-btn" id="btn-toggle-sound" title="Toggle audio feedback">
           <svg id="sound-icon-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

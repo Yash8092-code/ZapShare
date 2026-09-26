@@ -184,7 +184,12 @@ const webrtc = new WebRTCManager({
   onTransferStart: ({ role, meta, connectionType }) => {
     currentRole = role;
     switchView('transfer');
-    particles.startBridgeTransfer();
+    const mode = webrtc.getTransferMode();
+    if (mode === 'DEVICE_FRIENDLY' || webrtc.getDeviceClass() === 'MOBILE') {
+      particles.stopBridgeTransfer();
+    } else {
+      particles.startBridgeTransfer();
+    }
 
     if (meta) {
       if (role === 'sender') {
@@ -198,7 +203,7 @@ const webrtc = new WebRTCManager({
     }
 
     if (connQualityText) {
-      connQualityText.textContent = connectionType || 'Direct connection (LAN / P2P SCTP)';
+      connQualityText.textContent = connectionType || 'Direct P2P connection';
     }
 
     transferPercent.textContent = '0';
@@ -208,7 +213,7 @@ const webrtc = new WebRTCManager({
     metricTransferred.textContent = '0 B';
   },
 
-  onProgress: ({ percent, speedMB, etaSeconds, transferredBytes, totalBytes }) => {
+  onProgress: ({ percent, speedMB, etaSeconds, transferredBytes, totalBytes, statusText }) => {
     transferPercent.textContent = percent;
     transferProgressBar.style.width = `${percent}%`;
     metricSpeed.textContent = speedMB.toFixed(1);
@@ -226,6 +231,9 @@ const webrtc = new WebRTCManager({
 
     metricTransferred.textContent = formatBytes(transferredBytes);
     metricTotal.textContent = formatBytes(totalBytes);
+    if (statusText && connQualityText) {
+      connQualityText.textContent = statusText;
+    }
   },
 
   onConnectionQuality: (qualityText) => {
@@ -678,11 +686,32 @@ if (btnToggleDiag) {
   });
 }
 
-btnAbortTransfer.addEventListener('click', () => {
+// Mode Selector Listener (Phase 8: Maximum Speed, Balanced, Device Friendly)
+const selectTransferMode = document.getElementById('select-transfer-mode');
+if (selectTransferMode) {
+  selectTransferMode.value = webrtc.getTransferMode();
+  selectTransferMode.addEventListener('change', (e) => {
+    const mode = e.target.value;
+    webrtc.setTransferMode(mode);
+    sound.playClick();
+  });
+}
+
+btnAbortTransfer.addEventListener('click', async () => {
   sound.playClick();
-  webrtc.cancelTransfer();
-  particles.stopBridgeTransfer();
-  resetAll();
+  if (connQualityText) {
+    connQualityText.textContent = 'Stopping — finishing queued data...';
+  }
+  btnAbortTransfer.disabled = true;
+  btnAbortTransfer.textContent = 'Stopping...';
+  try {
+    await webrtc.cancelTransfer();
+  } finally {
+    btnAbortTransfer.disabled = false;
+    btnAbortTransfer.textContent = 'Cancel Transfer';
+    particles.stopBridgeTransfer();
+    resetAll();
+  }
 });
 
 // ==========================================================================
