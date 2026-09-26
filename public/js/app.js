@@ -259,17 +259,32 @@ const webrtc = new WebRTCManager({
     }
   },
 
-  onComplete: ({ role, meta, blob, downloadUrl }) => {
+  onComplete: ({ role, meta, blob, downloadUrl, isDirectlySaved, verified }) => {
     particles.stopBridgeTransfer();
     if (stallWarningBanner) stallWarningBanner.classList.add('hidden');
     switchView('complete');
+
+    const verifyBadge = document.getElementById('complete-verify-badge');
+    const verifyText = document.getElementById('complete-verify-text');
+    if (verifyBadge && verifyText) {
+      if (verified) {
+        verifyBadge.style.color = '#10B981';
+        verifyText.textContent = 'Transfer verified ✓ (Zero corrupted blocks)';
+      } else {
+        verifyBadge.style.color = '#F59E0B';
+        verifyText.textContent = 'Transfer complete';
+      }
+    }
 
     if (role === 'sender') {
       completeHeadline.textContent = 'Boom. File Delivered! ⚡';
       btnSaveDownload.classList.add('hidden');
     } else {
       completeHeadline.textContent = 'Boom. File Received! ⚡';
-      if (downloadUrl && meta) {
+      if (isDirectlySaved) {
+        btnSaveDownload.classList.add('hidden');
+        if (verifyText) verifyText.textContent = 'Directly saved to disk ✓ (Zero RAM buffering)';
+      } else if (downloadUrl && meta) {
         btnSaveDownload.href = downloadUrl;
         btnSaveDownload.download = meta.name;
         btnSaveDownload.classList.remove('hidden');
@@ -651,6 +666,17 @@ function resetReceiveFlow() {
 // ==========================================================================
 // SCREEN 3: TRANSFER IN PROGRESS
 // ==========================================================================
+
+const btnToggleDiag = document.getElementById('btn-toggle-diagnostics');
+if (btnToggleDiag) {
+  btnToggleDiag.addEventListener('click', (e) => {
+    e.preventDefault();
+    sound.playClick();
+    if (webrtc && webrtc.diagnostics) {
+      webrtc.diagnostics.togglePanel();
+    }
+  });
+}
 
 btnAbortTransfer.addEventListener('click', () => {
   sound.playClick();

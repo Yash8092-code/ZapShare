@@ -49,6 +49,29 @@ app.get('/api/info', (req, res) => {
   });
 });
 
+// Secure dynamic ICE / TURN configuration endpoint
+app.get('/api/ice-servers', (req, res) => {
+  const defaultIceServers = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' }
+  ];
+
+  // Optional secure authenticated TURN servers from environment (Cloudflare, Metered, coturn, etc.)
+  if (process.env.TURN_URL && process.env.TURN_USERNAME && process.env.TURN_CREDENTIAL) {
+    const urls = process.env.TURN_URL.split(',').map(u => u.trim());
+    defaultIceServers.push({
+      urls,
+      username: process.env.TURN_USERNAME,
+      credential: process.env.TURN_CREDENTIAL
+    });
+  }
+
+  res.json({ iceServers: defaultIceServers });
+});
+
 // WebSocket Signaling Logic
 wss.on('connection', (ws) => {
   let userPin = null;

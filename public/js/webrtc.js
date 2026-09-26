@@ -1,25 +1,76 @@
-// ZapShare WebRTC Core: Direct P2P SCTP Engine with Diagnostics & Mobile Safe Streaming
+// ZapShare WebRTC Core: Direct P2P High-Throughput Transfer Engine
+// Backpressure-governed SCTP, Dual-Channel Control & Data Protocol, Streaming OPFS Storage & Integrity Verification
 import { sound } from './sound.js';
+import { TransferState, ControlMessageType, RouteType, TransferDefaults } from './transfer/constants.js';
+import { TransferStateMachine } from './transfer/state-machine.js';
+import { SenderPipeline } from './transfer/sender-pipeline.js';
+import { ReceiverPipeline } from './transfer/receiver-pipeline.js';
+import { TransferDiagnostics } from './transfer/diagnostics.js';
 
 export class WebRTCManager {
   constructor(callbacks = {}) {
     this.callbacks = callbacks;
     this.ws = null;
     this.pc = null;
-    this.dataChannel = null;
     this.role = null; // 'sender' | 'receiver'
     this.pin = null;
     this.fileMeta = null;
     this.file = null;
 
+    // Dual-channel architecture:
+    // 1. controlChannel: lightweight JSON protocol messages (HEADER, ACK, HEARTBEAT, PAUSE, RESUME, EOF, VERIFY)
+    // 2. dataChannel: dedicated raw binary chunks (zero per-chunk JSON overhead)
+    this.controlChannel = null;
+    this.dataChannel = null;
+
+    // Transfer State Machine & Diagnostics
+    this.stateMachine = new TransferStateMachine(TransferState.IDLE, (newState, prevState, reason) => {
+      this.handleStateChange(newState, prevState, reason);
+    });
+    this.diagnostics = new TransferDiagnostics({ role: this.role || 'sender' });
+
+    // Transfer Pipelines
+    this.senderPipeline = new SenderPipeline({
+      stateMachine: this.stateMachine,
+      diagnostics: this.diagnostics,
+      callbacks: {
+        onProgress: (prog) => {
+          if (this.callbacks.onProgress) this.callbacks.onProgress(prog);
+        },
+        onStall: (msg) => {
+          if (this.callbacks.onStall) this.callbacks.onStall(msg);
+        }
+      }
+    });
+
+    this.receiverPipeline = new ReceiverPipeline({
+      stateMachine: this.stateMachine,
+      diagnostics: this.diagnostics,
+      callbacks: {
+        onProgress: (prog) => {
+          if (this.callbacks.onProgress) this.callbacks.onProgress(prog);
+        },
+        onVerifying: (msg) => {
+          if (this.callbacks.onConnectionQuality) {
+            this.callbacks.onConnectionQuality('Verifying transfer integrity...');
+          }
+        },
+        onComplete: (data) => {
+          this.handleTransferSuccess(data);
+        },
+        onError: (err) => {
+          if (this.callbacks.onError) this.callbacks.onError(err);
+        },
+        onCancelled: () => {
+          this.cleanupTransfer();
+          if (this.callbacks.onCancelled) this.callbacks.onCancelled();
+        }
+      }
+    });
+
     // Real transfer metrics
     this.totalBytes = 0;
     this.transferredBytes = 0;
-    this.receivedChunks = [];
-    this.startTime = 0;
-    this.lastSampleTime = 0;
-    this.lastSampleBytes = 0;
-    this.currentSpeedMB = 0;
     this.connectionType = 'Connecting peers (ICE checking)...';
     this.isTransferring = false;
     this.pendingCandidates = [];
@@ -27,14 +78,11 @@ export class WebRTCManager {
 
     // Watchdog & Stall Detection
     this.watchdogInterval = null;
-    this.lastWatchdogBytes = 0;
+    this.lastWatchdogConfirmedBytes = 0;
     this.zeroProgressCount = 0;
     this.checkingDuration = 0;
     this.isStallWarningActive = false;
     this.isRelayed = false;
-
-    // UI Throttling
-    this.lastUiUpdateTime = 0;
 
     // Pre-warming & Transfer Orchestration State
     this.isPrewarming = false;
@@ -64,7 +112,50 @@ export class WebRTCManager {
     this.isRestartingIce = false;
     this.iceRestartCount = 0;
 
+    // Dynamic ICE / TURN server configuration (Zero hard-coded credentials!)
+    this.iceServers = [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
+      { urls: 'stun:stun3.l.google.com:19302' },
+      { urls: 'stun:stun4.l.google.com:19302' }
+    ];
+
+    this.fetchIceServers();
     this.initWebSocket();
+  }
+
+  // Fetch secure dynamic ICE / TURN configuration from server
+  async fetchIceServers() {
+    try {
+      if (typeof window !== 'undefined' && window.ZAPSHARE_ICE_SERVERS) {
+        this.iceServers = window.ZAPSHARE_ICE_SERVERS;
+        return;
+      }
+      const res = await fetch('/api/ice-servers');
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.iceServers && data.iceServers.length > 0) {
+          this.iceServers = data.iceServers;
+          console.log(`[WebRTC] Loaded ${this.iceServers.length} dynamic ICE server configurations from server.`);
+        }
+      }
+    } catch (e) {
+      console.log('[WebRTC] Using standard Google STUN infrastructure.');
+    }
+  }
+
+  handleStateChange(newState, prevState, reason) {
+    if (this.callbacks.onTransferStateChange) {
+      this.callbacks.onTransferStateChange(newState, prevState, reason);
+    }
+    if (newState === TransferState.PAUSED_BACKPRESSURE) {
+      if (this.callbacks.onConnectionQuality) {
+        this.callbacks.onConnectionQuality('Data pipeline paused (Flow control / Network congestion)');
+      }
+    } else if (newState === TransferState.TRANSFERRING) {
+      this.updateConnectionQualityBadge();
+    }
   }
 
   initWebSocket() {
@@ -123,6 +214,7 @@ export class WebRTCManager {
     this.file = file;
     this.pin = Math.floor(100000 + Math.random() * 900000).toString();
     this.pendingCandidates = [];
+    this.diagnostics.setRole('sender');
 
     this.fileMeta = {
       name: file.name,
@@ -130,6 +222,8 @@ export class WebRTCManager {
       type: file.type || 'application/octet-stream',
       device: this.getDeviceLabel()
     };
+
+    this.stateMachine.transition(TransferState.PREPARING, 'create-room');
 
     this.sendSignal({
       type: 'create-room',
@@ -147,6 +241,9 @@ export class WebRTCManager {
     this.pin = pin.replace(/\s+/g, '');
     this.pendingCandidates = [];
     this.timing.signalingStart = performance.now();
+    this.diagnostics.setRole('receiver');
+
+    this.stateMachine.transition(TransferState.CONNECTING, 'join-room');
 
     this.sendSignal({
       type: 'join-room',
@@ -172,8 +269,7 @@ export class WebRTCManager {
         if (this.callbacks.onPeerConnected) {
           this.callbacks.onPeerConnected({ role: 'receiver', info: msg.senderInfo });
         }
-        // IMMEDIATELY begin WebRTC signaling, ICE gathering & pre-warming
-        // Holds data streaming until receiver clicks Accept & Download
+        // Pre-warm ICE immediately upon peer pairing
         if (this.role === 'sender' && !this.pc) {
           console.log('[WebRTC Pre-warm] Immediate ICE & connection pre-warming initiated upon peer pairing.');
           this.initiateWebRTCAsSender();
@@ -209,9 +305,11 @@ export class WebRTCManager {
           }
         } else if (msg.action === 'decline') {
           sound.playDecline();
+          this.stateMachine.transition(TransferState.CANCELLED, 'receiver-decline');
           if (this.callbacks.onDeclined) this.callbacks.onDeclined();
         } else if (msg.action === 'cancel') {
           this.cleanupTransfer();
+          this.stateMachine.transition(TransferState.CANCELLED, 'peer-cancel');
           if (this.callbacks.onCancelled) this.callbacks.onCancelled();
         }
         break;
@@ -224,6 +322,7 @@ export class WebRTCManager {
 
       case 'error': {
         console.error('[Signaling] Error message from server:', msg.message);
+        this.stateMachine.transition(TransferState.FAILED, 'signaling-error');
         if (this.callbacks.onError) this.callbacks.onError(msg.message);
         break;
       }
@@ -245,32 +344,8 @@ export class WebRTCManager {
 
   // --- WEBRTC PEER CONNECTION CREATION ---
   createPeerConnection() {
-    // Multi-tier STUN and multi-transport TURN servers (UDP, TCP, and TLS TURNS on 443/5349)
-    // Critical for punching through restrictive NATs, carrier-grade NATs (CGNAT), and mobile cellular firewalls
-    const defaultIceServers = [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
-      { urls: 'stun:stun2.l.google.com:19302' },
-      { urls: 'stun:stun3.l.google.com:19302' },
-      { urls: 'stun:stun4.l.google.com:19302' },
-      {
-        urls: [
-          'turn:global.relay.metered.ca:80',
-          'turn:global.relay.metered.ca:443',
-          'turn:global.relay.metered.ca:80?transport=tcp',
-          'turn:global.relay.metered.ca:443?transport=tcp',
-          'turns:global.relay.metered.ca:443?transport=tcp',
-          'turns:global.relay.metered.ca:5349?transport=tcp'
-        ],
-        username: 'openrelayproject',
-        credential: 'openrelayproject'
-      }
-    ];
-
-    const iceServers = (typeof window !== 'undefined' && window.ZAPSHARE_ICE_SERVERS) || defaultIceServers;
-
     const config = {
-      iceServers,
+      iceServers: this.iceServers,
       iceCandidatePoolSize: 2
     };
 
@@ -296,7 +371,6 @@ export class WebRTCManager {
       }
     };
 
-    // Diagnostics: capture any TURN/STUN transport or auth errors in real-time
     pc.onicecandidateerror = (event) => {
       const errEntry = {
         url: event.url,
@@ -310,13 +384,6 @@ export class WebRTCManager {
       if (this.iceCandidateErrors.length > 20) this.iceCandidateErrors.shift();
 
       console.warn(`[WebRTC ICE Candidate Error] Server: ${event.url} | Code: ${event.errorCode} (${event.errorText}) | Address: ${event.address}:${event.port}`);
-      if (event.errorCode === 401) {
-        console.error(`[WebRTC TURN Auth Failed] 401 Unauthorized for ${event.url}. Credentials rejected or expired.`);
-      } else if (event.errorCode === 486) {
-        console.error(`[WebRTC TURN Quota Exceeded] 486 Allocation Quota Reached for ${event.url}. Free TURN relay pool saturated.`);
-      } else if (event.errorCode === 701) {
-        console.error(`[WebRTC TURN Unreachable] 701 Server unreachable at ${event.url}. Carrier network or firewall blocking port.`);
-      }
     };
 
     pc.oniceconnectionstatechange = () => {
@@ -345,7 +412,6 @@ export class WebRTCManager {
         this.triggerIceRestart();
       } else if (pc.iceConnectionState === 'disconnected') {
         console.warn('[WebRTC State] ⚠️ ICE connection disconnected.');
-        // Handled by watchdog with rolling window to prevent brief transient flickers
       }
     };
 
@@ -361,7 +427,6 @@ export class WebRTCManager {
     return pc;
   }
 
-  // Update badge immediately based on actual ICE state
   updateConnectionQualityBadge() {
     if (!this.pc) return;
     const state = this.pc.iceConnectionState;
@@ -377,60 +442,19 @@ export class WebRTCManager {
     }
   }
 
-  // Inspect the negotiated candidate pair (host vs srflx vs relay)
   async detectCandidatePair() {
     if (!this.pc) return;
     try {
-      const stats = await this.pc.getStats();
-      let activePair = null;
+      await this.diagnostics.inspectPeerConnection(this.pc);
+      const snapshot = this.diagnostics.getSnapshot();
+      this.connectionType = snapshot.routeType;
 
-      stats.forEach((report) => {
-        if (report.type === 'transport' && report.selectedCandidatePairId) {
-          activePair = stats.get(report.selectedCandidatePairId);
-        }
-        if (!activePair && report.type === 'candidate-pair' && (report.selected || report.nominated || report.state === 'succeeded')) {
-          activePair = report;
-        }
-      });
-
-      if (activePair) {
-        const localCandidate = stats.get(activePair.localCandidateId);
-        const remoteCandidate = stats.get(activePair.remoteCandidateId);
-
-        this.lastActivePair = {
-          local: {
-            candidateType: localCandidate?.candidateType,
-            protocol: localCandidate?.protocol,
-            address: localCandidate?.address,
-            port: localCandidate?.port
-          },
-          remote: {
-            candidateType: remoteCandidate?.candidateType,
-            protocol: remoteCandidate?.protocol,
-            address: remoteCandidate?.address,
-            port: remoteCandidate?.port
-          },
-          state: activePair.state
-        };
-
-        console.log(`[WebRTC Candidate Pair] Local: ${localCandidate?.candidateType} (${localCandidate?.protocol} ${localCandidate?.address}:${localCandidate?.port}) <--> Remote: ${remoteCandidate?.candidateType} (${remoteCandidate?.protocol} ${remoteCandidate?.address}:${remoteCandidate?.port})`);
-
-        if (localCandidate?.candidateType === 'relay' || remoteCandidate?.candidateType === 'relay') {
-          this.connectionType = 'Relayed connection (via TURN)';
-          this.isRelayed = true;
-        } else if (localCandidate?.candidateType === 'host' && remoteCandidate?.candidateType === 'host') {
-          this.connectionType = 'Direct connection (LAN / Local P2P)';
-          this.isRelayed = false;
-        } else {
-          this.connectionType = 'Direct connection (P2P STUN)';
-          this.isRelayed = false;
-        }
+      if (snapshot.routeType.includes('TURN')) {
+        this.isRelayed = true;
       } else {
-        this.connectionType = 'Direct connection (P2P SCTP)';
         this.isRelayed = false;
       }
 
-      console.log(`[WebRTC Quality Badge] Showing: ${this.connectionType}`);
       if (this.callbacks.onConnectionQuality) {
         this.callbacks.onConnectionQuality(this.connectionType);
       }
@@ -439,41 +463,25 @@ export class WebRTCManager {
     }
   }
 
-  // Diagnostic dump for ICE connection issues
   logIceFailureDiagnostics() {
     const local = this.candidateStats.local;
     const remote = this.candidateStats.remote;
-    const pair = this.lastActivePair;
+    const pair = this.diagnostics ? this.diagnostics.activeCandidatePair : null;
     const errors = this.iceCandidateErrors.slice(-5);
 
     console.group('%c❌ [ZapShare WebRTC Connection Failure Diagnostic Report]', 'color: #EF4444; font-weight: bold; font-size: 1.1em;');
     console.log(`Role: ${this.role?.toUpperCase()} | ICE Connection State: ${this.pc ? this.pc.iceConnectionState : 'none'} | Peer Connection State: ${this.pc ? this.pc.connectionState : 'none'}`);
     console.log(`Local Candidates Gathered  : Host: ${local.host} | STUN (srflx): ${local.srflx} | TURN (relay): ${local.relay}`);
     console.log(`Remote Candidates Received : Host: ${remote.host} | STUN (srflx): ${remote.srflx} | TURN (relay): ${remote.relay}`);
-    
     if (pair) {
-      console.log(`Last Selected Candidate Pair: Local [${pair.local?.candidateType || '?'}] (${pair.local?.protocol} ${pair.local?.address}:${pair.local?.port}) <---> Remote [${pair.remote?.candidateType || '?'}] (${pair.remote?.protocol} ${pair.remote?.address}:${pair.remote?.port})`);
-    } else {
-      console.log('Last Selected Candidate Pair: None (Handshake failed before candidate nomination)');
+      console.log(`Last Selected Candidate Pair: Local [${pair.localType}] (${pair.protocol} ${pair.localAddress}) <---> Remote [${pair.remoteType}] (${pair.protocol} ${pair.remoteAddress})`);
     }
-
     if (errors.length > 0) {
-      console.log('Recorded ICE / TURN Errors   :', errors);
-    } else {
-      console.log('Recorded ICE / TURN Errors   : None reported by browser (likely carrier firewall drop or silent packet loss)');
-    }
-
-    if (local.relay === 0 && remote.relay === 0) {
-      console.warn('[Diagnostic Analysis] Neither peer gathered relay candidates. TURN server was unreachable, port was blocked, or credentials failed.');
-    } else if (local.relay > 0 && remote.relay === 0) {
-      console.warn('[Diagnostic Analysis] Local peer gathered TURN relay candidates, but remote peer did not. Remote side may be blocking TURN ports or credentials failed on remote.');
-    } else if (local.host > 0 && local.srflx === 0 && local.relay === 0) {
-      console.warn('[Diagnostic Analysis] Only local host candidates were gathered. No STUN/TURN servers were reachable across the public internet.');
+      console.log('Recorded ICE Errors:', errors);
     }
     console.groupEnd();
   }
 
-  // Active ICE Restart Mechanism with full SDP renegotiation
   async triggerIceRestart() {
     if (!this.pc || this.isRestartingIce) return;
     this.isRestartingIce = true;
@@ -486,7 +494,6 @@ export class WebRTCManager {
         this.pc.restartIce();
         const offer = await this.pc.createOffer({ iceRestart: true });
         await this.pc.setLocalDescription(offer);
-        console.log(`[WebRTC ICE Restart] Sender localDescription updated with restart ICE credentials. Relaying renegotiated offer...`);
         this.sendSignal({
           type: 'signal',
           pin: this.pin,
@@ -501,7 +508,6 @@ export class WebRTCManager {
         setTimeout(() => { this.isRestartingIce = false; }, 4000);
       }
     } else {
-      // Receiver peer asks sender to generate the renegotiated offer
       console.log('[WebRTC ICE Restart] Receiver requesting ICE restart offer from sender via signaling...');
       this.sendSignal({
         type: 'signal',
@@ -512,7 +518,7 @@ export class WebRTCManager {
     }
   }
 
-  // Immediate background WebRTC connection & ICE pre-warming (Triggered on peer pairing)
+  // Pre-warm WebRTC connection on peer pairing
   async initiateWebRTCAsSender() {
     if (this.isPrewarming || this.pc) return;
     this.isPrewarming = true;
@@ -523,18 +529,19 @@ export class WebRTCManager {
     console.log('[WebRTC Pre-warm] ⚡ Initializing RTCPeerConnection & ICE gathering ahead of user confirmation...');
     this.pc = this.createPeerConnection();
 
-    // Create high-throughput RTCDataChannel
-    this.dataChannel = this.pc.createDataChannel('zapshare_transfer', {
-      ordered: true
-    });
+    // Create dual RTCDataChannels
+    this.controlChannel = this.pc.createDataChannel('zapshare_control', { ordered: true });
+    this.dataChannel = this.pc.createDataChannel('zapshare_data', { ordered: true });
     this.dataChannel.binaryType = 'arraybuffer';
+
+    this.setupControlChannel(this.controlChannel);
     this.setupDataChannel(this.dataChannel);
 
     const offer = await this.pc.createOffer();
     await this.pc.setLocalDescription(offer);
 
     this.timing.offerSent = performance.now();
-    console.log(`[WebRTC Pre-warm] Sender created offer in ${(this.timing.offerSent - this.timing.signalingStart).toFixed(0)} ms. Local SDP set. Relaying offer...`);
+    console.log(`[WebRTC Pre-warm] Sender created offer in ${(this.timing.offerSent - this.timing.signalingStart).toFixed(0)} ms. Relaying offer...`);
     this.sendSignal({
       type: 'signal',
       pin: this.pin,
@@ -544,17 +551,19 @@ export class WebRTCManager {
 
   // Triggered when receiver clicks "Accept & Download"
   startTransferAsSender() {
+    if (this.stateMachine.is(TransferState.TRANSFERRING)) {
+      console.warn('[WebRTC] Transfer already in progress. Ignoring duplicate start.');
+      return;
+    }
+
     this.isTransferring = true;
     this.totalBytes = this.file ? this.file.size : 0;
     this.transferredBytes = 0;
-    this.startTime = performance.now();
-    this.lastSampleTime = performance.now();
-    this.lastSampleBytes = 0;
-    this.lastUiUpdateTime = 0;
     this.zeroProgressCount = 0;
     this.checkingDuration = 0;
     this.isStallWarningActive = false;
 
+    this.stateMachine.transition(TransferState.TRANSFERRING, 'start-transfer');
     this.startWatchdog();
 
     if (this.callbacks.onTransferStart) {
@@ -567,17 +576,18 @@ export class WebRTCManager {
 
     if (this.isChannelReady && this.dataChannel && this.dataChannel.readyState === 'open') {
       console.log(`[WebRTC Send] 🚀 Connection pre-warmed & open! Streaming file IMMEDIATELY (0 ms setup latency)...`);
-      this.streamFileToPeer();
+      this.senderPipeline.streamFile(this.file).catch(err => {
+        console.error('[WebRTC Send] Stream error:', err);
+        if (this.callbacks.onError) this.callbacks.onError('Transfer failed: ' + err.message);
+      });
     } else {
       console.log('[WebRTC Send] Receiver accepted while ICE still completing. Will stream the exact moment dataChannel opens.');
     }
   }
 
-  // Handle SDP offer/answer and ICE candidate signals
   async handlePeerSignal(data) {
     if (data.requestIceRestart) {
       if (this.role === 'sender') {
-        console.log('[WebRTC Signaling] Peer requested ICE restart. Initiating renegotiated offer...');
         this.triggerIceRestart();
       }
       return;
@@ -588,39 +598,46 @@ export class WebRTCManager {
         if (!this.pc) {
           console.log('[WebRTC] Receiver received initial offer. Creating PeerConnection...');
           this.pc = this.createPeerConnection();
+
           this.pc.ondatachannel = (e) => {
-            console.log('[WebRTC] Receiver ondatachannel event received! Attaching channel...');
-            this.dataChannel = e.channel;
-            this.dataChannel.binaryType = 'arraybuffer';
-            this.setupDataChannel(this.dataChannel);
+            const channel = e.channel;
+            console.log(`[WebRTC] Receiver ondatachannel received: "${channel.label}"`);
+            if (channel.label === 'zapshare_control') {
+              this.controlChannel = channel;
+              this.setupControlChannel(channel);
+            } else if (channel.label === 'zapshare_data') {
+              this.dataChannel = channel;
+              this.dataChannel.binaryType = 'arraybuffer';
+              this.setupDataChannel(channel);
+            } else if (channel.label === 'zapshare_transfer') {
+              // Backward-compatibility: single channel handles both
+              this.controlChannel = channel;
+              this.dataChannel = channel;
+              this.dataChannel.binaryType = 'arraybuffer';
+              this.setupControlChannel(channel);
+              this.setupDataChannel(channel);
+            }
           };
-        } else {
-          console.log('[WebRTC] Receiver received renegotiated offer (ICE restart). Updating remote description...');
         }
 
         await this.pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
         this.timing.remoteDescSet = performance.now();
-        console.log(`[WebRTC] Receiver setRemoteDescription(offer) succeeded (+${(this.timing.remoteDescSet - (this.timing.signalingStart || this.timing.remoteDescSet)).toFixed(0)} ms).`);
 
-        // Drain any pending candidates
         await this.drainPendingCandidates();
 
         const answer = await this.pc.createAnswer();
         await this.pc.setLocalDescription(answer);
 
         this.timing.offerSent = performance.now();
-        console.log('[WebRTC] Receiver created answer. Relaying answer...');
         this.sendSignal({
           type: 'signal',
           pin: this.pin,
           data: { sdp: this.pc.localDescription }
         });
       } else if (data.sdp.type === 'answer') {
-        console.log('[WebRTC] Sender received answer. Setting remote description...');
         if (this.pc) {
           await this.pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
           this.timing.remoteDescSet = performance.now();
-          console.log(`[WebRTC] Sender setRemoteDescription(answer) succeeded (+${(this.timing.remoteDescSet - this.timing.signalingStart).toFixed(0)} ms).`);
           this.isRestartingIce = false;
           await this.drainPendingCandidates();
         }
@@ -634,13 +651,12 @@ export class WebRTCManager {
       if (this.candidateStats.remote[type] !== undefined) {
         this.candidateStats.remote[type]++;
       }
-      console.log(`[WebRTC ICE Remote Candidate #${this.candidateStats.remote[type] || 1}] Added candidate: ${candidate.type} | Protocol: ${candidate.protocol} (${candidate.address || 'mDNS'})`);
 
       if (this.pc && this.pc.remoteDescription && this.pc.remoteDescription.type) {
         try {
           await this.pc.addIceCandidate(candidate);
 
-          // If mDNS .local candidate is received and we know the local LAN IP, synthesize a parallel direct IP candidate
+          // Synthesize parallel direct IP candidate for mDNS .local candidates
           if (this.serverLocalIp && this.serverLocalIp !== 'localhost' && candidate.candidate && candidate.candidate.includes('.local')) {
             try {
               const directCandStr = candidate.candidate.replace(/[a-zA-Z0-9-]+\.local/, this.serverLocalIp);
@@ -650,32 +666,57 @@ export class WebRTCManager {
                 sdpMLineIndex: candidate.sdpMLineIndex
               });
               this.pc.addIceCandidate(directCand).catch(() => {});
-              console.log(`[WebRTC ICE Parallel LAN] Dispatched parallel direct IP candidate: ${this.serverLocalIp}`);
             } catch (e) {}
           }
         } catch (e) {
           console.warn('[WebRTC] Error adding ICE candidate:', e);
         }
       } else {
-        // Queue candidate until setRemoteDescription completes
         this.pendingCandidates.push(candidate);
-        console.log(`[WebRTC ICE Queue] Queued remote candidate (${this.pendingCandidates.length} total)`);
       }
     }
   }
 
   async drainPendingCandidates() {
     if (!this.pc) return;
-    console.log(`[WebRTC ICE Queue] Draining ${this.pendingCandidates.length} queued ICE candidates...`);
     while (this.pendingCandidates.length > 0) {
       const cand = this.pendingCandidates.shift();
       try {
         await this.pc.addIceCandidate(cand);
-        console.log(`[WebRTC ICE Queue] Drained candidate: ${cand.type}`);
       } catch (err) {
         console.warn('[WebRTC ICE Queue] Error adding drained candidate:', err);
       }
     }
+  }
+
+  setupControlChannel(dc) {
+    dc.onopen = () => {
+      console.log(`[WebRTC ControlChannel] OPEN! (${dc.label})`);
+      this.checkBothChannelsReady();
+    };
+
+    dc.onclose = () => {
+      console.log('[WebRTC ControlChannel] Closed.');
+    };
+
+    dc.onerror = (err) => {
+      console.error('[WebRTC ControlChannel] Error:', err);
+    };
+
+    dc.onmessage = async (event) => {
+      try {
+        if (typeof event.data === 'string') {
+          const msg = JSON.parse(event.data);
+          if (this.role === 'sender') {
+            this.senderPipeline.handleControlMessage(msg);
+          } else {
+            await this.receiverPipeline.handleControlMessage(msg);
+          }
+        }
+      } catch (err) {
+        console.warn('[WebRTC ControlChannel] Parse error:', err);
+      }
+    };
   }
 
   setupDataChannel(dc) {
@@ -683,25 +724,10 @@ export class WebRTCManager {
       if (!this.timing.channelOpen) {
         this.timing.channelOpen = performance.now();
       }
-      this.isChannelReady = true;
       const sctpMax = (this.pc && this.pc.sctp && this.pc.sctp.maxMessageSize) || 65536;
       console.log(`[WebRTC DataChannel] OPEN! Role: ${this.role} | sctp.maxMessageSize: ${sctpMax} B | binaryType: ${dc.binaryType}`);
 
-      this.detectCandidatePair();
-      this.printTimingBreakdown();
-      this.statsInterval = setInterval(() => this.detectCandidatePair(), 1500);
-
-      if (this.role === 'sender') {
-        if (this.hasReceiverAccepted) {
-          console.log('[WebRTC Send] Receiver already accepted. Streaming file immediately (0ms delay)!');
-          this.streamFileToPeer();
-        } else {
-          console.log('[WebRTC Pre-warm] Connection & DataChannel PRE-WARMED! Holding stream until receiver clicks Accept.');
-          if (this.callbacks.onPrewarmReady) {
-            this.callbacks.onPrewarmReady();
-          }
-        }
-      }
+      this.checkBothChannelsReady();
     };
 
     dc.onclose = () => {
@@ -715,13 +741,61 @@ export class WebRTCManager {
     };
 
     dc.onmessage = async (event) => {
-      await this.handleIncomingDataChannelMessage(event.data);
+      if (this.role === 'receiver') {
+        // If message is string (backward compatibility fallback), route to control handler
+        if (typeof event.data === 'string') {
+          try {
+            const msg = JSON.parse(event.data);
+            await this.receiverPipeline.handleControlMessage(msg);
+          } catch (e) {}
+        } else {
+          // Raw binary chunk
+          await this.receiverPipeline.handleBinaryChunk(event.data);
+        }
+      }
     };
   }
 
-  // Receiver accepts incoming file
-  acceptIncomingFile() {
+  checkBothChannelsReady() {
+    const isControlOpen = this.controlChannel && this.controlChannel.readyState === 'open';
+    const isDataOpen = this.dataChannel && this.dataChannel.readyState === 'open';
+
+    if (isControlOpen && isDataOpen && !this.isChannelReady) {
+      this.isChannelReady = true;
+      const sctpMax = (this.pc && this.pc.sctp && this.pc.sctp.maxMessageSize) || 65536;
+
+      this.senderPipeline.setChannels(this.controlChannel, this.dataChannel, sctpMax);
+      this.receiverPipeline.setChannels(this.controlChannel, this.dataChannel);
+
+      this.detectCandidatePair();
+      this.printTimingBreakdown();
+      this.statsInterval = setInterval(() => this.detectCandidatePair(), 1500);
+
+      this.stateMachine.transition(TransferState.READY, 'channels-open');
+
+      if (this.role === 'sender') {
+        if (this.hasReceiverAccepted) {
+          console.log('[WebRTC Send] Receiver already accepted. Streaming file immediately (0ms delay)!');
+          this.senderPipeline.streamFile(this.file).catch(err => {
+            console.error('[WebRTC Send] Stream error:', err);
+            if (this.callbacks.onError) this.callbacks.onError('Transfer failed: ' + err.message);
+          });
+        } else {
+          console.log('[WebRTC Pre-warm] Channels PRE-WARMED! Holding stream until receiver clicks Accept.');
+          if (this.callbacks.onPrewarmReady) {
+            this.callbacks.onPrewarmReady();
+          }
+        }
+      }
+    }
+  }
+
+  acceptIncomingFile(customFileHandle = null) {
     this.hasReceiverAccepted = true;
+    if (customFileHandle) {
+      this.receiverPipeline.setFileHandle(customFileHandle);
+    }
+
     this.sendSignal({
       type: 'transfer-action',
       pin: this.pin,
@@ -731,15 +805,11 @@ export class WebRTCManager {
     this.isTransferring = true;
     this.totalBytes = this.fileMeta ? this.fileMeta.size : 0;
     this.transferredBytes = 0;
-    this.receivedChunks = [];
-    this.startTime = performance.now();
-    this.lastSampleTime = performance.now();
-    this.lastSampleBytes = 0;
-    this.lastUiUpdateTime = 0;
     this.zeroProgressCount = 0;
     this.checkingDuration = 0;
     this.isStallWarningActive = false;
 
+    this.stateMachine.transition(TransferState.TRANSFERRING, 'receiver-accept');
     this.startWatchdog();
 
     if (this.callbacks.onTransferStart) {
@@ -761,6 +831,7 @@ export class WebRTCManager {
   }
 
   cancelTransfer() {
+    this.stateMachine.transition(TransferState.CANCELLED, 'user-cancel');
     this.sendSignal({
       type: 'transfer-action',
       pin: this.pin,
@@ -769,211 +840,10 @@ export class WebRTCManager {
     this.cleanupTransfer();
   }
 
-  // --- SENDER: STREAMING WITH SAFETY & BUFFER MONITORING ---
-  async streamFileToPeer() {
-    const dc = this.dataChannel;
-    if (!this.file || !dc || dc.readyState !== 'open') {
-      console.warn('[WebRTC Send] Cannot stream: channel not open.');
-      return;
-    }
-
-    const totalSize = this.file.size;
-    const sctpMax = (this.pc && this.pc.sctp && this.pc.sctp.maxMessageSize) || 65536;
-
-    // Adaptive Chunk Sizing based on device, route, and negotiated SCTP limits:
-    // - Chrome/Chromium desktop & mobile negotiate sctpMax = 262,144 (256 KB).
-    //   On non-relay connections, 128KB (131,072 B) chunks cut function call & framing overhead by 4x.
-    // - sctpMax >= 64KB (Safari / WebKit): 64KB (65,536 B).
-    // - Constrained / Relayed / Unknown: safe 32KB fallback (32,768 B).
-    let chunkSize = 32 * 1024;
-    if (sctpMax >= 262144 && !this.isRelayed) {
-      chunkSize = 128 * 1024; // 128 KB
-    } else if (sctpMax >= 65536 && !this.isRelayed) {
-      chunkSize = 64 * 1024; // 64 KB
-    } else {
-      chunkSize = 32 * 1024; // 32 KB fallback
-    }
-
-    const CHUNK_SIZE = chunkSize;
-    const BLOCK_SIZE = 4 * 1024 * 1024; // 4 MB memory read block
-    const BUFFER_CEILING = 4 * 1024 * 1024; // 4 MB pipeline in flight (keeps pipe full)
-    const BUFFER_RESUME = 1024 * 1024; // 1 MB resume threshold
-
-    console.log(`[WebRTC Send] 🚀 Starting transfer of "${this.file.name}" (${(totalSize / (1024 * 1024)).toFixed(2)} MB)`);
-    console.log(`[WebRTC Send Config] Negotiated sctp.maxMessageSize: ${sctpMax} B | Adaptive Chunk Size: ${CHUNK_SIZE / 1024} KB | Buffer Ceiling: ${BUFFER_CEILING / (1024 * 1024)} MB | Low Threshold: ${BUFFER_RESUME / (1024 * 1024)} MB | Relayed: ${this.isRelayed}`);
-
-    // 1. Send metadata header
-    dc.send(JSON.stringify({
-      type: 'HEADER',
-      name: this.file.name,
-      size: totalSize,
-      mime: this.file.type || 'application/octet-stream'
-    }));
-
-    dc.bufferedAmountLowThreshold = BUFFER_RESUME;
-
-    let fileOffset = 0;
-    let bytesQueued = 0;
-    let chunkCount = 0;
-
-    const streamStart = performance.now();
-
-    try {
-      while (fileOffset < totalSize) {
-        if (!this.isTransferring) break;
-
-        // Read 4MB memory block from file
-        const blockSlice = this.file.slice(fileOffset, Math.min(totalSize, fileOffset + BLOCK_SIZE));
-        const blockBuffer = await blockSlice.arrayBuffer();
-        fileOffset += blockBuffer.byteLength;
-
-        let blockOffset = 0;
-        const blockLen = blockBuffer.byteLength;
-
-        while (blockOffset < blockLen) {
-          if (!this.isTransferring) break;
-
-          const sliceSize = Math.min(CHUNK_SIZE, blockLen - blockOffset);
-          const chunk = blockBuffer.slice(blockOffset, blockOffset + sliceSize);
-
-          // Flow control: if bufferedAmount exceeds 4MB, wait for drain to 1MB
-          if (dc.bufferedAmount > BUFFER_CEILING) {
-            await new Promise((resolve) => {
-              let done = false;
-              const timer = setTimeout(() => {
-                if (!done) {
-                  done = true;
-                  dc.removeEventListener('bufferedamountlow', onLow);
-                  resolve();
-                }
-              }, 250); // 250ms fallback
-
-              const onLow = () => {
-                if (!done) {
-                  done = true;
-                  clearTimeout(timer);
-                  dc.removeEventListener('bufferedamountlow', onLow);
-                  resolve();
-                }
-              };
-
-              dc.addEventListener('bufferedamountlow', onLow, { once: true });
-              if (dc.bufferedAmount <= BUFFER_RESUME) {
-                onLow();
-              }
-            });
-          }
-
-          // Send raw binary ArrayBuffer
-          dc.send(chunk);
-          blockOffset += sliceSize;
-          bytesQueued += sliceSize;
-          chunkCount++;
-
-          // Periodic progress log every 20 chunks
-          if (chunkCount % 20 === 0 || bytesQueued >= totalSize) {
-            const currentSpeed = this.currentSpeedMB.toFixed(1);
-            console.log(`[WebRTC Send #${chunkCount}] Queued: ${(bytesQueued / (1024 * 1024)).toFixed(2)} / ${(totalSize / (1024 * 1024)).toFixed(2)} MB (${((bytesQueued / totalSize) * 100).toFixed(1)}%) | Speed: ${currentSpeed} MB/s | bufferedAmount: ${(dc.bufferedAmount / 1024).toFixed(0)} KB`);
-          }
-
-          const actualTransferred = Math.max(0, bytesQueued - dc.bufferedAmount);
-          this.throttledUpdateMetrics(actualTransferred, totalSize);
-        }
-      }
-
-      // Wait for all buffered data to flush over the wire
-      console.log(`[WebRTC Send] All chunks queued (${chunkCount} total). Flushing remaining ${(dc.bufferedAmount / 1024).toFixed(0)} KB in buffer...`);
-      while (dc.bufferedAmount > 0) {
-        const actualTransferred = Math.max(0, bytesQueued - dc.bufferedAmount);
-        this.throttledUpdateMetrics(actualTransferred, totalSize);
-        await new Promise((r) => setTimeout(r, 10));
-      }
-
-      const streamDuration = (performance.now() - streamStart) / 1000;
-      const avgSpeed = (totalSize / (1024 * 1024)) / (streamDuration || 0.001);
-      console.log(`[WebRTC Send Metric] ⚡ Transfer finished! Total: ${(totalSize / (1024 * 1024)).toFixed(2)} MB in ${streamDuration.toFixed(2)}s | Achieved Speed: ${avgSpeed.toFixed(2)} MB/s (${chunkCount} chunks @ ${CHUNK_SIZE / 1024} KB/chunk)`);
-
-      this.transferredBytes = totalSize;
-      this.throttledUpdateMetrics(totalSize, totalSize, true);
-
-      // Send end-of-file sentinel
-      if (this.isTransferring) {
-        dc.send(JSON.stringify({ type: 'EOF' }));
-      }
-    } catch (err) {
-      console.error('[WebRTC Send] Streaming error:', err);
-      if (this.callbacks.onError) this.callbacks.onError('Transfer failed: ' + err.message);
-    }
-  }
-
-  // --- RECEIVER: RECEIVE & REASSEMBLE CHUNKS ---
-  async handleIncomingDataChannelMessage(data) {
-    const dc = this.dataChannel;
-
-    // Handle string control messages (HEADER, EOF, ACK_COMPLETE)
-    if (typeof data === 'string') {
-      try {
-        const msg = JSON.parse(data);
-
-        if (msg.type === 'HEADER') {
-          this.fileMeta = { name: msg.name, size: msg.size, type: msg.mime };
-          this.totalBytes = msg.size;
-          this.transferredBytes = 0;
-          this.receivedChunks = [];
-          this.startTime = performance.now();
-          this.lastSampleTime = performance.now();
-          this.lastSampleBytes = 0;
-          this.lastUiUpdateTime = 0;
-          console.log(`[WebRTC Receive] Starting incoming file: ${msg.name} (${(msg.size / (1024 * 1024)).toFixed(2)} MB)`);
-        } else if (msg.type === 'EOF') {
-          const duration = (performance.now() - this.startTime) / 1000;
-          const avgSpeed = (this.totalBytes / (1024 * 1024)) / (duration || 0.001);
-          console.log(`[WebRTC Receive Metric] ⚡ Transfer complete! ${(this.totalBytes / (1024 * 1024)).toFixed(2)} MB received in ${duration.toFixed(2)}s | Achieved Speed: ${avgSpeed.toFixed(2)} MB/s (${this.receivedChunks.length} chunks). Assembling file...`);
-          const blob = new Blob(this.receivedChunks, {
-            type: (this.fileMeta && this.fileMeta.type) || 'application/octet-stream'
-          });
-
-          if (dc && dc.readyState === 'open') {
-            dc.send(JSON.stringify({ type: 'ACK_COMPLETE' }));
-          }
-
-          this.throttledUpdateMetrics(this.totalBytes, this.totalBytes, true);
-          this.handleTransferSuccess(blob);
-        } else if (msg.type === 'ACK_COMPLETE') {
-          if (this.role === 'sender') {
-            console.log('[WebRTC Send] Received ACK_COMPLETE from receiver.');
-            this.throttledUpdateMetrics(this.totalBytes, this.totalBytes, true);
-            this.handleTransferSuccess(null);
-          }
-        }
-      } catch (e) {
-        console.warn('[WebRTC] Control message parse error:', e);
-      }
-      return;
-    }
-
-    // Binary chunk: support both ArrayBuffer and Blob (mobile browser compatibility)
-    let buffer = data;
-    if (data instanceof Blob) {
-      buffer = await data.arrayBuffer();
-    }
-
-    if (buffer instanceof ArrayBuffer) {
-      this.receivedChunks.push(buffer);
-      this.transferredBytes += buffer.byteLength;
-
-      if (this.receivedChunks.length % 20 === 0) {
-        console.log(`[WebRTC Receive #${this.receivedChunks.length}] Received: ${(this.transferredBytes / (1024 * 1024)).toFixed(2)} / ${(this.totalBytes / (1024 * 1024)).toFixed(2)} MB | Speed: ${this.currentSpeedMB.toFixed(1)} MB/s`);
-      }
-
-      this.throttledUpdateMetrics(this.transferredBytes, this.totalBytes);
-    }
-  }
-
-  // --- STALL DETECTOR WATCHDOG ---
+  // --- DATA-PLANE & ICE SEPARATED WATCHDOG ---
   startWatchdog() {
     this.stopWatchdog();
-    this.lastWatchdogBytes = 0;
+    this.lastWatchdogConfirmedBytes = 0;
     this.zeroProgressCount = 0;
     this.checkingDuration = 0;
     this.isStallWarningActive = false;
@@ -981,13 +851,16 @@ export class WebRTCManager {
     this.watchdogInterval = setInterval(() => {
       if (!this.isTransferring || this.totalBytes === 0) return;
 
-      const currentBytes = this.transferredBytes;
-      const bytesDiff = currentBytes - this.lastWatchdogBytes;
+      const currentBytes = this.role === 'sender'
+        ? this.senderPipeline.confirmedBytes
+        : this.receiverPipeline.receivedBytes;
+
+      const bytesDiff = currentBytes - this.lastWatchdogConfirmedBytes;
       const iceState = this.pc ? this.pc.iceConnectionState : 'unknown';
       const dcReady = this.dataChannel ? this.dataChannel.readyState : 'none';
       const bufferedAmount = this.dataChannel ? this.dataChannel.bufferedAmount : 0;
 
-      // Track consecutive seconds of 0 byte progress
+      // Track consecutive seconds of 0 confirmed byte progress
       if (bytesDiff === 0 && currentBytes < this.totalBytes) {
         this.zeroProgressCount += 1;
       } else {
@@ -1003,27 +876,23 @@ export class WebRTCManager {
         }
       }
 
-      // Track ICE checking duration
       if (iceState === 'checking') {
         this.checkingDuration += 1;
       } else {
         this.checkingDuration = 0;
       }
 
-      // Determine if a real stall or connection drop has occurred
-      // CRITICAL RULE: NEVER show a stall/reconnect warning if iceConnectionState is 'connected' or 'completed'
-      // and dataChannel is 'open', even if bytesDiff is 0 (normal backpressure or disk pauses).
+      // Explicit root-cause stall differentiation:
       let shouldAlert = false;
       let warningMessage = '';
 
       if (iceState === 'failed') {
         shouldAlert = true;
-        warningMessage = 'Connection failed. Attempting ICE restart...';
+        warningMessage = 'Network connection failed. Attempting ICE restart...';
         if (!this.isRestartingIce) {
           this.triggerIceRestart();
         }
       } else if (iceState === 'disconnected') {
-        // Disconnected for at least 4 seconds of truly zero byte progress
         if (this.zeroProgressCount >= 4) {
           shouldAlert = true;
           warningMessage = 'Network connection disrupted. Reconnecting peers...';
@@ -1035,29 +904,34 @@ export class WebRTCManager {
         shouldAlert = true;
         warningMessage = `Direct connection taking longer than expected (${this.checkingDuration}s). Negotiating route...`;
       } else if (iceState === 'connected' || iceState === 'completed') {
-        // ICE is completely healthy!
-        // Never trigger "Transfer stalled... Retrying connection".
-        // Log diagnostic notice if zero progress persists during backpressure drain
-        if (this.zeroProgressCount >= 5 && this.zeroProgressCount % 5 === 0) {
-          console.warn(`[WebRTC Watchdog Diagnostics] Notice: 0 bytes progress for ${this.zeroProgressCount}s, but ICE is healthy (${iceState}) | bufferedAmount: ${bufferedAmount} B | transferred: ${currentBytes}/${this.totalBytes} B`);
+        // ICE IS COMPLETELY HEALTHY!
+        // Never trigger ICE restart or call it a network loss.
+        if (this.zeroProgressCount >= 15) {
+          shouldAlert = true;
+          if (this.senderPipeline.isRemotePaused) {
+            warningMessage = 'Data pipeline paused: receiver writing to local storage...';
+          } else if (bufferedAmount > 0) {
+            warningMessage = `Data pipeline paused: network backpressure (${(bufferedAmount / 1024).toFixed(0)} KB in buffer)...`;
+          } else {
+            warningMessage = 'Transfer data pipeline stalled. Waiting for peer data flow...';
+          }
         }
       }
 
       if (shouldAlert) {
         this.isStallWarningActive = true;
-        console.warn(`[WebRTC Watchdog Fired] Reason: ${warningMessage} | iceConnectionState: ${iceState} | bufferedAmount: ${bufferedAmount} B | bytesTransferredInWindow: ${bytesDiff} B | zeroProgressDuration: ${this.zeroProgressCount}s`);
+        console.warn(`[WebRTC Watchdog Fired] Reason: ${warningMessage} | iceConnectionState: ${iceState} | bufferedAmount: ${bufferedAmount} B | zeroProgressDuration: ${this.zeroProgressCount}s`);
         if (this.callbacks.onStall) {
           this.callbacks.onStall(warningMessage);
         }
       } else if (this.isStallWarningActive && (iceState === 'connected' || iceState === 'completed') && bytesDiff > 0) {
         this.isStallWarningActive = false;
-        console.log('[WebRTC Watchdog] ✅ Connection confirmed healthy and bytes flowing.');
         if (this.callbacks.onStallRecovered) {
           this.callbacks.onStallRecovered();
         }
       }
 
-      this.lastWatchdogBytes = currentBytes;
+      this.lastWatchdogConfirmedBytes = currentBytes;
     }, 1000);
   }
 
@@ -1071,60 +945,13 @@ export class WebRTCManager {
     this.isStallWarningActive = false;
   }
 
-  // --- THROTTLED SYNCHRONIZED METRICS ENGINE ---
-  throttledUpdateMetrics(currentBytes, totalBytes, force = false) {
-    const now = performance.now();
-    const elapsedSinceLastUi = now - this.lastUiUpdateTime;
-
-    if (!force && elapsedSinceLastUi < 100 && currentBytes < totalBytes) {
-      return;
-    }
-    this.lastUiUpdateTime = now;
-
-    const elapsedTotal = (now - this.startTime) / 1000;
-    const elapsedSample = (now - this.lastSampleTime) / 1000;
-
-    let instantSpeedMB = 0;
-    if (elapsedSample > 0.05) {
-      const bytesDiff = currentBytes - this.lastSampleBytes;
-      instantSpeedMB = (bytesDiff / elapsedSample) / (1024 * 1024);
-      this.lastSampleTime = now;
-      this.lastSampleBytes = currentBytes;
-    } else if (elapsedTotal > 0.05) {
-      instantSpeedMB = (currentBytes / elapsedTotal) / (1024 * 1024);
-    }
-    this.currentSpeedMB = Math.max(0, instantSpeedMB);
-
-    const percent = totalBytes > 0 ? Math.min(100, Math.floor((currentBytes / totalBytes) * 100)) : 0;
-    const remainingBytes = Math.max(0, totalBytes - currentBytes);
-
-    let etaSeconds = 0;
-    if (currentBytes >= totalBytes) {
-      etaSeconds = 0;
-    } else if (this.currentSpeedMB > 0) {
-      etaSeconds = Math.ceil((remainingBytes / (1024 * 1024)) / this.currentSpeedMB);
-    } else if (elapsedTotal > 0 && currentBytes > 0) {
-      const avgSpeedMB = (currentBytes / elapsedTotal) / (1024 * 1024);
-      etaSeconds = Math.ceil((remainingBytes / (1024 * 1024)) / (avgSpeedMB || 1));
-    }
-
-    if (this.callbacks.onProgress) {
-      this.callbacks.onProgress({
-        percent,
-        speedMB: this.currentSpeedMB,
-        etaSeconds,
-        transferredBytes: currentBytes,
-        totalBytes
-      });
-    }
-  }
-
-  handleTransferSuccess(blob = null) {
+  handleTransferSuccess(data = {}) {
     this.isTransferring = false;
     this.stopWatchdog();
     if (this.callbacks.onStallRecovered) this.callbacks.onStallRecovered();
     if (this.statsInterval) clearInterval(this.statsInterval);
 
+    this.stateMachine.transition(TransferState.COMPLETED, 'transfer-complete');
     sound.playSuccess();
 
     this.sendSignal({
@@ -1136,12 +963,13 @@ export class WebRTCManager {
       this.callbacks.onComplete({
         role: this.role,
         meta: this.fileMeta,
-        blob: blob,
-        downloadUrl: blob ? URL.createObjectURL(blob) : null
+        blob: data.blob || null,
+        file: data.file || null,
+        downloadUrl: data.downloadUrl || null,
+        isDirectlySaved: data.isDirectlySaved || false,
+        verified: data.verified || true
       });
     }
-
-    this.receivedChunks = [];
   }
 
   cleanupTransfer() {
@@ -1154,6 +982,18 @@ export class WebRTCManager {
     this.stopWatchdog();
     if (this.callbacks.onStallRecovered) this.callbacks.onStallRecovered();
     if (this.statsInterval) clearInterval(this.statsInterval);
+
+    if (this.senderPipeline) {
+      this.senderPipeline.cancel();
+    }
+    if (this.receiverPipeline) {
+      this.receiverPipeline.cleanup();
+    }
+
+    if (this.controlChannel) {
+      try { this.controlChannel.close(); } catch (e) {}
+      this.controlChannel = null;
+    }
     if (this.dataChannel) {
       try { this.dataChannel.close(); } catch (e) {}
       this.dataChannel = null;
@@ -1162,14 +1002,11 @@ export class WebRTCManager {
       try { this.pc.close(); } catch (e) {}
       this.pc = null;
     }
-    this.receivedChunks = [];
+
     this.pendingCandidates = [];
     this.isRestartingIce = false;
     this.iceRestartCount = 0;
-    this.candidateStats = {
-      local: { host: 0, srflx: 0, prflx: 0, relay: 0 },
-      remote: { host: 0, srflx: 0, prflx: 0, relay: 0 }
-    };
+    this.stateMachine.reset();
   }
 
   setServerLocalIp(ip) {
@@ -1199,7 +1036,7 @@ export class WebRTCManager {
       `  3. setRemoteDescription Applied : +${tRemote} ms\n` +
       `  4. First ICE Candidate Handled  : +${tCand} ms\n` +
       `  5. ICE State === 'connected'    : +${tIce} ms\n` +
-      `  6. RTCDataChannel Open & Ready  : +${tDc} ms\n` +
+      `  6. RTCDataChannels Open & Ready : +${tDc} ms\n` +
       `  --------------------------------------------------\n` +
       `  Total Connection Setup Time     : ${totalSetupMs} ms\n` +
       `  Pre-Warming Status              : ✅ Connected BEFORE user click (0ms transfer start latency)`,

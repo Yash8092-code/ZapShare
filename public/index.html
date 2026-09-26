@@ -588,8 +588,9 @@
               <span>Keep this tab active. Backgrounding your browser (especially iOS Safari) can pause or interrupt the transfer.</span>
             </div>
 
-            <!-- Minimal Cancel Action -->
-            <div class="transfer-cancel-wrap">
+            <!-- Actions: Diagnostics & Cancel -->
+            <div class="transfer-cancel-wrap" style="display: flex; justify-content: center; align-items: center; gap: 20px;">
+              <button class="btn-text-link" id="btn-toggle-diagnostics" style="color: var(--accent-cyan); font-size: 0.8rem; text-decoration: none; opacity: 0.85;">Diagnostics (Ctrl+Shift+D)</button>
               <button class="btn-text-link danger" id="btn-abort-transfer">Cancel transfer</button>
             </div>
 
@@ -621,6 +622,12 @@
               <div class="complete-file-info">
                 <span class="summary-name" id="complete-file-name">Project_Assets.zip</span>
                 <span class="summary-size" id="complete-file-size">1.84 GB</span>
+              </div>
+              <div class="complete-verify-badge" id="complete-verify-badge" style="display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 0.82rem; color: #10B981; margin-top: 10px; font-weight: 500;">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <polyline points="20 6 9 17 4 12"></polyline>
+                </svg>
+                <span id="complete-verify-text">Transfer verified ✓ (Zero corrupted blocks)</span>
               </div>
             </div>
 
